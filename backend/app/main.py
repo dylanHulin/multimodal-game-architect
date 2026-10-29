@@ -5,6 +5,7 @@ from typing import Optional
 
 from app.agents.gdd_agent import GDDAgent, GDDType, GameDesignDocumentResponse
 from app.agents.code_agent import CodeGenAgent, CodeGenerationResponse  # type: ignore
+from app.agents.asset_agent import AssetAgent, AssetGenerationResponse  # type: ignore
 
 app = FastAPI(
     title="MultiModal GameArchitect API",
@@ -30,9 +31,14 @@ class CodeGenerationRequest(BaseModel):
     prompt: str
     engine: Optional[str] = "Godot 4"
 
+class AssetGenerationRequest(BaseModel):
+    prompt: str
+    asset_type: Optional[str] = "sprite_sheet"
+
 # Instance globale de l'agent
 gdd_agent = GDDAgent()
 code_agent = CodeGenAgent()
+asset_agent = AssetAgent()
 
 @app.get("/")
 def read_root():
@@ -62,5 +68,15 @@ async def generate_code(request: CodeGenerationRequest):
     return await code_agent.generate_script(
         prompt=request.prompt,
         engine=request.engine or "Godot 4"
+    )
+
+@app.post("/api/v1/generate-asset", response_model=AssetGenerationResponse)
+async def generate_asset(request: AssetGenerationRequest):
+    if not request.prompt:
+        raise HTTPException(status_code=400, detail="Le prompt ne peut pas être vide.")
+    
+    return await asset_agent.generate_asset(
+        prompt=request.prompt,
+        asset_type=request.asset_type or "sprite_sheet"
     )
     return result
