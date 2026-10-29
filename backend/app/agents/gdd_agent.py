@@ -1,6 +1,6 @@
 import os
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel # type: ignore
 from typing import List, Optional
 
 class GDDType(str, Enum):
