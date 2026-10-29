@@ -1,15 +1,16 @@
-from fastapi import FastAPI, HTTPException # type: ignore
-from fastapi.middleware.cors import CORSMiddleware # type: ignore
-from pydantic import BaseModel # type: ignore
-from typing import List, Optional
+from fastapi import FastAPI, HTTPException  # type: ignore
+from fastapi.middleware.cors import CORSMiddleware  # type: ignore
+from pydantic import BaseModel  # type: ignore
+from typing import Optional
+
+from app.agents.gdd_agent import GDDAgent, GDDType, GameDesignDocumentResponse
 
 app = FastAPI(
     title="MultiModal GameArchitect API",
-    description="Agentic Game Generation Engine for Meta AI Developer Hackathon",
-    version="0.1.0"
+    description="Agentic Game Generation Engine based on Scott Rogers Framework",
+    version="0.2.0"
 )
 
-# Configuration CORS pour permettre au frontend de communiquer avec le backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,33 +19,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Modèle Pydantic pour la requête initiale
 class GameConceptRequest(BaseModel):
     prompt: str
+    doc_type: Optional[GDDType] = GDDType.ONE_SHEET
     genre: Optional[str] = "Survie 2D"
-    engine: Optional[str] = "Godot 4"  # ou "Unity"
+    engine: Optional[str] = "Godot 4"
+
+# Instance globale de l'agent
+gdd_agent = GDDAgent()
 
 @app.get("/")
 def read_root():
     return {
         "status": "online",
         "project": "MultiModal-GameArchitect",
-        "hackathon": "Meta AI Developer Hackathon 2026"
+        "framework": "Scott Rogers (Level Up!)"
     }
 
-@app.post("/api/v1/generate-concept")
-async def generate_concept(request: GameConceptRequest):
+@app.post("/api/v1/generate-gdd", response_model=GameDesignDocumentResponse)
+async def generate_gdd(request: GameConceptRequest):
     if not request.prompt:
         raise HTTPException(status_code=400, detail="Le prompt ne peut pas être vide.")
     
-    # Mock temporaire avant d'intégrer le vrai appel LLM Llama
-    return {
-        "title": f"Projet : {request.prompt[:20]}...",
-        "engine": request.engine,
-        "gdd": {
-            "summary": f"Game Design Document généré pour : {request.prompt}",
-            "core_loop": "Explorer -> Récolter -> Survivre -> Améliorer",
-            "mechanics": ["Déplacement 2D Top-Down", "Gestion de ressources", "IA ennemie basique"]
-        },
-        "status": "ready_for_code_generation"
-    }
+    result = await gdd_agent.generate_document(
+        prompt=request.prompt,
+        doc_type=request.doc_type,
+        genre=request.genre,
+        engine=request.engine
+    )
+    return result
