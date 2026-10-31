@@ -2,51 +2,75 @@
 
 import { useState } from 'react';
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000';
+
+interface GddData {
+  document_type: string;
+  one_sheet?: {
+    title?: string;
+    story_summary?: string;
+    usps?: string[];
+  };
+  visual_style_prompt?: string;
+}
+
+interface CodeData {
+  engine: string;
+  file_name: string;
+  language: string;
+  code_content: string;
+}
+
+interface AssetData {
+  asset_type: string;
+  prompt_used: string;
+  image_url: string;
+  status: string;
+}
+
+async function apiFetch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`${path} failed: ${res.status} ${res.statusText} ${text.slice(0, 300)}`);
+  }
+  return (await res.json()) as T;
+}
+
 export default function Home() {
   const [prompt, setPrompt] = useState('Un jeu de survie contre des hordes de zombies dans un cimetière');
   const [engine, setEngine] = useState('Godot 4');
   const [docType, setDocType] = useState('beat_chart');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const [gddData, setGddData] = useState<any>(null);
-  const [codeData, setCodeData] = useState<any>(null);
-  const [assetData, setAssetData] = useState<any>(null);
+  const [gddData, setGddData] = useState<GddData | null>(null);
+  const [codeData, setCodeData] = useState<CodeData | null>(null);
+  const [assetData, setAssetData] = useState<AssetData | null>(null);
 
   const handleGenerate = async () => {
     setLoading(true);
+    setError(null);
     setGddData(null);
     setCodeData(null);
     setAssetData(null);
 
     try {
-      // 1. Appel GDD Agent
-      const resGdd = await fetch('http://127.0.0.1:8000/api/v1/generate-gdd', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, doc_type: docType, engine }),
-      });
-      const dataGdd = await resGdd.json();
+      // The three agent calls are independent: run them in parallel.
+      const [dataGdd, dataCode, dataAsset] = await Promise.all([
+        apiFetch<GddData>('/api/v1/generate-gdd', { prompt, doc_type: docType, engine }),
+        apiFetch<CodeData>('/api/v1/generate-code', { prompt, engine }),
+        apiFetch<AssetData>('/api/v1/generate-asset', { prompt, asset_type: 'sprite_sheet' }),
+      ]);
       setGddData(dataGdd);
-
-      // 2. Appel Code Agent
-      const resCode = await fetch('http://localhost:8000/api/v1/generate-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, engine }),
-      });
-      const dataCode = await resCode.json();
       setCodeData(dataCode);
-
-      // 3. Appel Asset Agent
-      const resAsset = await fetch('http://localhost:8000/api/v1/generate-asset', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, asset_type: 'sprite_sheet' }),
-      });
-      const dataAsset = await resAsset.json();
       setAssetData(dataAsset);
     } catch (err) {
-      console.error('Erreur lors de la génération :', err);
+      setError(err instanceof Error ? err.message : 'Unknown generation error');
     } finally {
       setLoading(false);
     }
@@ -70,7 +94,7 @@ export default function Home() {
         {/* Formulaire de configuration */}
         <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl h-fit">
           <h2 className="text-xl font-bold mb-4 text-slate-200">1. Concept du Jeu</h2>
-          
+
           <label className="block text-xs text-slate-400 mb-1">Prompt de départ</label>
           <textarea
             className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm mb-4 focus:outline-none focus:border-blue-500 text-slate-200"
@@ -107,6 +131,12 @@ export default function Home() {
           >
             {loading ? 'Génération en cours...' : '⚡ Lancer le Pipeline IA'}
           </button>
+
+          {error && (
+            <p className="mt-4 text-xs text-red-400 bg-red-950/40 border border-red-500/30 rounded-lg p-3 break-words">
+              {error}
+            </p>
+          )}
         </div>
 
         {/* Dashboard de résultat */}

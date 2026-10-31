@@ -21,7 +21,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "*"],
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -58,19 +58,20 @@ def read_root():
 async def generate_gdd(request: GameConceptRequest):
     if not request.prompt:
         raise HTTPException(status_code=400, detail="Le prompt ne peut pas être vide.")
-    
+
     result = await gdd_agent.generate_document(
         prompt=request.prompt,
         doc_type=request.doc_type,
         genre=request.genre,
         engine=request.engine
     )
+    return result
 
 @app.post("/api/v1/generate-code", response_model=CodeGenerationResponse)
 async def generate_code(request: CodeGenerationRequest):
     if not request.prompt:
         raise HTTPException(status_code=400, detail="Le prompt ne peut pas être vide.")
-    
+
     return await code_agent.generate_script(
         prompt=request.prompt,
         engine=request.engine or "Godot 4"
@@ -80,9 +81,8 @@ async def generate_code(request: CodeGenerationRequest):
 async def generate_asset(request: AssetGenerationRequest):
     if not request.prompt:
         raise HTTPException(status_code=400, detail="Le prompt ne peut pas être vide.")
-    
+
     return await asset_agent.generate_asset(
         prompt=request.prompt,
         asset_type=request.asset_type or "sprite_sheet"
     )
-    return result
