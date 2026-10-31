@@ -2,10 +2,13 @@ from fastapi import FastAPI, HTTPException  # type: ignore
 from fastapi.middleware.cors import CORSMiddleware  # type: ignore
 from pydantic import BaseModel  # type: ignore
 from typing import Optional
+from dotenv import load_dotenv  # type: ignore
 
 from app.agents.gdd_agent import GDDAgent, GDDType, GameDesignDocumentResponse
 from app.agents.code_agent import CodeGenAgent, CodeGenerationResponse  # type: ignore
 from app.agents.asset_agent import AssetAgent, AssetGenerationResponse  # type: ignore
+
+load_dotenv()  # Charge les variables du fichier .env
 
 app = FastAPI(
     title="MultiModal GameArchitect API",
