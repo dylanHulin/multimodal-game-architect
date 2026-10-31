@@ -4,6 +4,14 @@ import { useState } from 'react';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000';
 
+interface BeatChartLevelData {
+  level_name: string;
+  progression_focus: string;
+  mechanics_introduced?: string[];
+  enemies_introduced?: string[];
+  estimated_play_time?: string;
+}
+
 interface GddData {
   document_type: string;
   one_sheet?: {
@@ -11,7 +19,9 @@ interface GddData {
     story_summary?: string;
     usps?: string[];
   };
+  beat_chart?: BeatChartLevelData[] | null;
   visual_style_prompt?: string;
+  status?: string;
 }
 
 interface CodeData {
@@ -52,28 +62,41 @@ export default function Home() {
   const [codeData, setCodeData] = useState<CodeData | null>(null);
   const [assetData, setAssetData] = useState<AssetData | null>(null);
 
-  const handleGenerate = async () => {
+  const handleGenerate = () => {
     setLoading(true);
     setError(null);
     setGddData(null);
     setCodeData(null);
     setAssetData(null);
 
-    try {
-      // The three agent calls are independent: run them in parallel.
-      const [dataGdd, dataCode, dataAsset] = await Promise.all([
-        apiFetch<GddData>('/api/v1/generate-gdd', { prompt, doc_type: docType, engine }),
-        apiFetch<CodeData>('/api/v1/generate-code', { prompt, engine }),
-        apiFetch<AssetData>('/api/v1/generate-asset', { prompt, asset_type: 'sprite_sheet' }),
-      ]);
-      setGddData(dataGdd);
-      setCodeData(dataCode);
-      setAssetData(dataAsset);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown generation error');
-    } finally {
+    // Independent calls: each section displays as soon as its own result
+    // arrives (code + asset in ~1s; the real Meta GDD call takes 1-2 min).
+    const failures: string[] = [];
+    const onError = (label: string) => (err: unknown) => {
+      failures.push(`${label} : ${err instanceof Error ? err.message : 'Unknown error'}`);
+    };
+
+    const pending = [
+      apiFetch<GddData>('/api/v1/generate-gdd', { prompt, doc_type: docType, engine }).then(
+        setGddData,
+        onError('GDD'),
+      ),
+      apiFetch<CodeData>('/api/v1/generate-code', { prompt, engine }).then(
+        setCodeData,
+        onError('Code'),
+      ),
+      apiFetch<AssetData>('/api/v1/generate-asset', { prompt, asset_type: 'sprite_sheet' }).then(
+        setAssetData,
+        onError('Asset'),
+      ),
+    ];
+
+    void Promise.all(pending).then(() => {
+      if (failures.length > 0) {
+        setError(failures.join('\n'));
+      }
       setLoading(false);
-    }
+    });
   };
 
   return (
@@ -148,6 +171,10 @@ export default function Home() {
               <div className="space-y-4 text-sm text-slate-300">
                 <p><strong className="text-white">Titre :</strong> {gddData.one_sheet?.title}</p>
                 <p><strong className="text-white">Résumé :</strong> {gddData.one_sheet?.story_summary}</p>
+                <p className="text-xs text-slate-500">Format : <span className="font-mono text-slate-400">{gddData.document_type}</span></p>
+                {gddData.status && gddData.status !== 'success' && (
+                  <p className="text-xs text-amber-400 italic">Contenu de secours : la réponse Meta était inutilisable (voir les logs backend).</p>
+                )}
                 <div>
                   <strong className="text-white block mb-1">USPs (Unique Selling Points) :</strong>
                   <ul className="list-disc list-inside space-y-1 text-slate-400">
@@ -156,6 +183,21 @@ export default function Home() {
                     ))}
                   </ul>
                 </div>
+                {gddData.beat_chart && gddData.beat_chart.length > 0 && (
+                  <div>
+                    <strong className="text-white block mb-1">Beat Chart (Progression) :</strong>
+                    <ul className="space-y-2">
+                      {gddData.beat_chart.map((lvl: BeatChartLevelData, idx: number) => (
+                        <li key={idx} className="bg-slate-950 border border-slate-800 rounded-lg p-3">
+                          <p className="text-slate-200 font-semibold">{lvl.level_name} <span className="text-slate-500 font-normal">({lvl.estimated_play_time})</span></p>
+                          <p className="text-slate-400 text-xs mt-1">{lvl.progression_focus}</p>
+                          <p className="text-slate-500 text-xs mt-1">Mécaniques : {(lvl.mechanics_introduced ?? []).join(', ')}</p>
+                          <p className="text-slate-500 text-xs">Ennemis : {(lvl.enemies_introduced ?? []).join(', ')}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             ) : (
               <p className="text-xs text-slate-500 italic">En attente de génération...</p>
@@ -183,7 +225,10 @@ export default function Home() {
             {assetData ? (
               <div className="space-y-3">
                 <p className="text-xs text-slate-400"><strong>Prompt :</strong> {assetData.prompt_used}</p>
-                <img src={assetData.image_url} alt="Generated Sprite" className="w-32 h-32 rounded-lg border border-slate-800 bg-slate-950" />
+                <img src={assetData.image_url} alt="Generated game asset" className="w-full max-w-sm rounded-lg border border-slate-800 bg-slate-950" />
+                {assetData.status !== 'success' && (
+                  <p className="text-xs text-amber-400 italic">Aperçu simulé : la génération Meta Muse Image a échoué (voir les logs backend).</p>
+                )}
               </div>
             ) : (
               <p className="text-xs text-slate-500 italic">En attente de génération...</p>

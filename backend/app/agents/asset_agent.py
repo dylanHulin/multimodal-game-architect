@@ -1,6 +1,12 @@
+import base64
+import logging
 import os
-from pydantic import BaseModel # type: ignore
-from typing import Optional
+
+import httpx
+from pydantic import BaseModel  # type: ignore
+
+logger = logging.getLogger(__name__)
+
 
 class AssetGenerationResponse(BaseModel):
     asset_type: str
@@ -8,20 +14,89 @@ class AssetGenerationResponse(BaseModel):
     image_url: str
     status: str
 
+
+META_RESPONSES_URL = "https://api.meta.ai/v1/responses"
+MODEL_ID = "muse-image-1.0"
+
+
+def _sniff_mime(raw: bytes) -> str:
+    if raw.startswith(b"\x89PNG"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith(b"RIFF") and len(raw) > 11 and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/webp"
+
+
 class AssetAgent:
     def __init__(self, api_key: str = None):
-        self.api_key = api_key or os.getenv("MUSE_IMAGE_API_KEY", "")
+        self.api_key = (
+            api_key or os.getenv("MUSE_IMAGE_API_KEY", "") or os.getenv("META_LLAMA_API_KEY", "")
+        )
+        self.url = META_RESPONSES_URL
+        self.timeout = httpx.Timeout(connect=10.0, read=180.0, write=10.0, pool=10.0)
 
-    async def generate_asset(self, prompt: str, asset_type: str = "sprite_sheet") -> AssetGenerationResponse:
-        # Construction d'un prompt optimisé pour Meta Muse Image
-        enhanced_prompt = f"Meta Muse Image generation: {prompt}, {asset_type}, 2D game asset, transparent background, high resolution pixel art"
-        
-        # URL fictive/placeholder en attendant la clé d'API de production
-        placeholder_url = f"https://placehold.co/512x512/png?text={asset_type.replace('_', '+')}"
+    @staticmethod
+    def _extract_image_b64(data: dict) -> str | None:
+        """Per Meta cookbook: the image is the base64 `result` of the `image_generation_call` item."""
+        for item in data.get("output", []) or []:
+            if isinstance(item, dict) and item.get("type") == "image_generation_call":
+                if item.get("status") not in ("completed", None):
+                    return None
+                result = item.get("result")
+                return result if isinstance(result, str) and result else None
+        return None
 
+    def _placeholder(self, asset_type: str, enhanced_prompt: str) -> AssetGenerationResponse:
         return AssetGenerationResponse(
             asset_type=asset_type,
             prompt_used=enhanced_prompt,
-            image_url=placeholder_url,
-            status="success"
+            image_url=f"https://placehold.co/512x512/png?text={asset_type.replace('_', '+')}",
+            status="placeholder",
         )
+
+    async def generate_asset(self, prompt: str, asset_type: str = "sprite_sheet") -> AssetGenerationResponse:
+        enhanced_prompt = (
+            f"2D game asset, {asset_type.replace('_', ' ')}: {prompt}. "
+            "Transparent or plain background, high resolution pixel art, game-ready sprite, no text, no watermark."
+        )
+
+        if not self.api_key:
+            logger.warning("MUSE_IMAGE_API_KEY missing: serving placeholder asset (no Meta call made).")
+            return self._placeholder(asset_type, enhanced_prompt)
+
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {"model": MODEL_ID, "input": enhanced_prompt}
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(self.url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            if data.get("status") not in ("completed", None):
+                raise RuntimeError(f"Meta response not completed: status={data.get('status')!r}")
+            b64 = self._extract_image_b64(data)
+            if not b64:
+                raise RuntimeError("No image_generation_call result in Meta response.")
+            raw = base64.b64decode(b64)
+            if len(raw) < 100:
+                raise RuntimeError("Decoded image payload suspiciously small.")
+            mime = _sniff_mime(raw)
+            return AssetGenerationResponse(
+                asset_type=asset_type,
+                prompt_used=enhanced_prompt,
+                image_url=f"data:{mime};base64,{b64}",
+                status="success",
+            )
+        except httpx.HTTPStatusError as e:
+            logger.error("Meta Image API HTTP %s: %s", e.response.status_code, e.response.text[:500])
+        except httpx.TimeoutException:
+            logger.error("Meta Image API timed out after %ss read timeout.", self.timeout.read)
+        except (RuntimeError, ValueError) as e:
+            logger.error("Meta Image response unusable, falling back to placeholder: %s", e)
+        except Exception:
+            logger.exception("Unexpected Meta Image call failure; falling back to placeholder.")
+        return self._placeholder(asset_type, enhanced_prompt)

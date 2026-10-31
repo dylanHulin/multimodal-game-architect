@@ -11,14 +11,10 @@ const nextConfig: NextConfig = {
       },
     },
   },
-  async rewrites() {
-    return [
-      {
-        source: "/api/backend/:path*",
-        destination: "http://127.0.0.1:8000/api/:path*",
-      },
-    ];
-  },
+  // NOTE: no rewrites() proxy on purpose. The Next dev rewrite proxy kills
+  // upstream requests slower than ~30s with HTTP 500, which broke Full GDD
+  // (~50s) and sometimes image generation. The browser calls the backend
+  // directly (see .env.local) and FastAPI CORS covers localhost:3000.
 };
 
 export default nextConfig;

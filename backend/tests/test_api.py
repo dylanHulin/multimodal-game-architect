@@ -22,9 +22,9 @@ from fastapi.testclient import TestClient
 class PipelineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # Force the mock GDD path so tests never hit the Meta network API.
+        # Force the mock paths so tests never hit the Meta network API.
         # Patched BEFORE importing app.main: load_dotenv() won't override it.
-        cls._env = patch.dict(os.environ, {"META_LLAMA_API_KEY": ""})
+        cls._env = patch.dict(os.environ, {"META_LLAMA_API_KEY": "", "MUSE_IMAGE_API_KEY": ""})
         cls._env.start()
         import app.main as main_module
         from app.agents.gdd_agent import GDDAgent
@@ -88,6 +88,66 @@ class PipelineTests(unittest.TestCase):
         )
         self.assertEqual(r2.status_code, 200, r2.text)
         self.assertIn("image_url", r2.json())
+        self.assertEqual(r2.json()["status"], "placeholder")
+
+    def test_build_prompt_varies_by_doc_type(self):
+        # Regression: doc_type was plumbed through but never reached the Meta prompt,
+        # so every format returned similar content.
+        from app.agents.gdd_agent import GDDAgent, GDDType
+
+        agent = GDDAgent(api_key="dummy-test-key")
+        one = agent._build_prompt("x", "g", "e", GDDType.ONE_SHEET)
+        full = agent._build_prompt("x", "g", "e", GDDType.FULL_GDD)
+        beat = agent._build_prompt("x", "g", "e", GDDType.BEAT_CHART)
+        self.assertNotEqual(one, full)
+        self.assertIn("ONE-SHEET", one)
+        self.assertIn("FULL GAME DESIGN", full)
+        self.assertIn('"beat_chart"', beat)
+        self.assertNotIn('"beat_chart"', one)
+
+    def test_generate_gdd_malformed_meta_output_falls_back_to_mock(self):
+        # Regression: off-schema Meta output (common on big full_gdd answers) once
+        # raised an uncaught TypeError -> HTTP 500. It must fall back to mock 200.
+        import app.main as main_module
+        from app.agents.gdd_agent import GDDAgent
+        from unittest.mock import AsyncMock
+
+        one_sheet = (
+            '"one_sheet": {"title": "t", "target_systems": ["PC"], "target_age": "12+",'
+            ' "esrb_rating": "E", "story_summary": "s", "gameplay_modes": ["Solo"],'
+            ' "usps": ["u"], "competitive_products": ["c"]}'
+        )
+        shapes = {
+            "beat_chart as object": "{" + one_sheet + ', "beat_chart": {"lvl": "x"}, "visual_style_prompt": "v"}',
+            "level as string": "{" + one_sheet + ', "beat_chart": ["nope"], "visual_style_prompt": "v"}',
+            "one_sheet as list": '{"one_sheet": [], "visual_style_prompt": "v"}',
+            "top-level list": '["nope"]',
+        }
+        for name, text in shapes.items():
+            with self.subTest(name):
+                agent = GDDAgent(api_key="dummy-test-key")
+                agent._call_meta_api = AsyncMock(
+                    return_value={
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "message",
+                                "content": [{"type": "output_text", "text": text}],
+                            }
+                        ],
+                    }
+                )
+                old = main_module.gdd_agent
+                main_module.gdd_agent = agent
+                try:
+                    resp = self.client.post(
+                        "/api/v1/generate-gdd",
+                        json={"prompt": "z", "doc_type": "full_gdd"},
+                    )
+                finally:
+                    main_module.gdd_agent = old
+                self.assertEqual(resp.status_code, 200, f"{name}: {resp.text}")
+                self.assertEqual(resp.json()["status"], "mock", name)
 
 
 if __name__ == "__main__":
