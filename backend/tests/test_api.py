@@ -82,13 +82,53 @@ class PipelineTests(unittest.TestCase):
             "/api/v1/generate-code", json={"prompt": "player", "engine": "Godot 4"}
         )
         self.assertEqual(r1.status_code, 200, r1.text)
-        self.assertIn("code_content", r1.json())
+        self.assertIn("extends CharacterBody2D", r1.json()["code_content"])
+        self.assertEqual(r1.json()["status"], "mock")
         r2 = self.client.post(
-            "/api/v1/generate-asset", json={"prompt": "slime", "asset_type": "sprite_sheet"}
+            "/api/v1/generate-asset",
+            json={"prompt": "slime", "asset_type": "concept_art", "style": "watercolor"},
         )
         self.assertEqual(r2.status_code, 200, r2.text)
         self.assertIn("image_url", r2.json())
         self.assertEqual(r2.json()["status"], "placeholder")
+        self.assertIn("watercolor", r2.json()["prompt_used"])
+        self.assertIn("concept art", r2.json()["prompt_used"])
+
+    def test_generate_code_success_path_strips_fences(self):
+        import app.main as main_module
+        from app.agents.code_agent import CodeGenAgent
+        from unittest.mock import AsyncMock
+
+        agent = CodeGenAgent(api_key="dummy-test-key")
+        agent._call_meta_api = AsyncMock(
+            return_value={
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "```gdscript\nextends CharacterBody2D\n\n@export var speed := 200.0\n```",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        old = main_module.code_agent
+        main_module.code_agent = agent
+        try:
+            resp = self.client.post(
+                "/api/v1/generate-code", json={"prompt": "double jump", "engine": "Godot 4"}
+            )
+        finally:
+            main_module.code_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "success")
+        self.assertEqual(body["code_content"], "extends CharacterBody2D\n\n@export var speed := 200.0")
+        self.assertEqual(body["language"], "GDScript")
 
     def test_build_prompt_varies_by_doc_type(self):
         # Regression: doc_type was plumbed through but never reached the Meta prompt,

@@ -29,6 +29,7 @@ interface CodeData {
   file_name: string;
   language: string;
   code_content: string;
+  status?: string;
 }
 
 interface AssetData {
@@ -60,14 +61,16 @@ export default function Home() {
 
   const [gddData, setGddData] = useState<GddData | null>(null);
   const [codeData, setCodeData] = useState<CodeData | null>(null);
-  const [assetData, setAssetData] = useState<AssetData | null>(null);
+  const [assetTypes, setAssetTypes] = useState<string[]>(['sprite']);
+  const [artStyle, setArtStyle] = useState('pixel art');
+  const [assetList, setAssetList] = useState<AssetData[]>([]);
 
   const handleGenerate = () => {
     setLoading(true);
     setError(null);
     setGddData(null);
     setCodeData(null);
-    setAssetData(null);
+    setAssetList([]);
 
     // Independent calls: each section displays as soon as its own result
     // arrives (code + asset in ~1s; the real Meta GDD call takes 1-2 min).
@@ -85,9 +88,11 @@ export default function Home() {
         setCodeData,
         onError('Code'),
       ),
-      apiFetch<AssetData>('/api/v1/generate-asset', { prompt, asset_type: 'sprite_sheet' }).then(
-        setAssetData,
-        onError('Asset'),
+      ...assetTypes.map((t) =>
+        apiFetch<AssetData>('/api/v1/generate-asset', { prompt, asset_type: t, style: artStyle }).then(
+          (a) => setAssetList((prev) => [...prev, a]),
+          onError(`Asset (${t})`),
+        ),
       ),
     ];
 
@@ -145,6 +150,43 @@ export default function Home() {
             <option value="one_sheet">One-Sheet (Pitch & USPs)</option>
             <option value="beat_chart">Beat Chart (Progression)</option>
             <option value="full_gdd">Full GDD</option>
+          </select>
+
+          <label className="block text-xs text-slate-400 mb-1">Assets visuels (~0,01 $ / image)</label>
+          <div className="space-y-1 mb-4 text-sm text-slate-200">
+            {[
+              { v: 'sprite', l: 'Sprites' },
+              { v: 'concept_art', l: 'Concept arts' },
+              { v: 'ui_concept', l: 'UI concept' },
+            ].map((o) => (
+              <label key={o.v} className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="accent-blue-600"
+                  checked={assetTypes.includes(o.v)}
+                  onChange={() =>
+                    setAssetTypes((prev) =>
+                      prev.includes(o.v) ? prev.filter((t) => t !== o.v) : [...prev, o.v],
+                    )
+                  }
+                />
+                {o.l}
+              </label>
+            ))}
+          </div>
+
+          <label className="block text-xs text-slate-400 mb-1">Style graphique</label>
+          <select
+            className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm mb-6 text-slate-200"
+            value={artStyle}
+            onChange={(e) => setArtStyle(e.target.value)}
+          >
+            <option value="pixel art">Pixel art</option>
+            <option value="hand-painted digital art">Peinture numérique</option>
+            <option value="anime style">Anime / manga</option>
+            <option value="watercolor">Aquarelle</option>
+            <option value="dark realistic">Réaliste sombre</option>
+            <option value="cartoon">Cartoon</option>
           </select>
 
           <button
@@ -210,6 +252,9 @@ export default function Home() {
             {codeData ? (
               <div>
                 <span className="text-xs font-mono text-emerald-500 mb-2 block">{codeData.file_name} ({codeData.language})</span>
+                {codeData.status && codeData.status !== 'success' && (
+                  <p className="text-xs text-amber-400 italic mb-2">Script de secours : la génération Meta a échoué (voir les logs backend).</p>
+                )}
                 <pre className="bg-slate-950 p-4 rounded-lg text-xs font-mono text-slate-300 overflow-x-auto border border-slate-800">
                   {codeData.code_content}
                 </pre>
@@ -222,13 +267,18 @@ export default function Home() {
           {/* Section Assets Visuels */}
           <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl">
             <h2 className="text-lg font-bold text-purple-400 mb-2">🎨 Assets Visuels (Meta Muse Image Agent)</h2>
-            {assetData ? (
-              <div className="space-y-3">
-                <p className="text-xs text-slate-400"><strong>Prompt :</strong> {assetData.prompt_used}</p>
-                <img src={assetData.image_url} alt="Generated game asset" className="w-full max-w-sm rounded-lg border border-slate-800 bg-slate-950" />
-                {assetData.status !== 'success' && (
-                  <p className="text-xs text-amber-400 italic">Aperçu simulé : la génération Meta Muse Image a échoué (voir les logs backend).</p>
-                )}
+            {assetList.length > 0 ? (
+              <div className="space-y-4">
+                {assetList.map((a, idx) => (
+                  <div key={idx} className="space-y-2 border-b border-slate-800 pb-4 last:border-0 last:pb-0">
+                    <p className="text-xs font-mono text-purple-400">{a.asset_type}</p>
+                    <p className="text-xs text-slate-400"><strong>Prompt :</strong> {a.prompt_used}</p>
+                    <img src={a.image_url} alt={`Generated ${a.asset_type}`} className="w-full max-w-sm rounded-lg border border-slate-800 bg-slate-950" />
+                    {a.status !== 'success' && (
+                      <p className="text-xs text-amber-400 italic">Aperçu simulé : la génération Meta Muse Image a échoué (voir les logs backend).</p>
+                    )}
+                  </div>
+                ))}
               </div>
             ) : (
               <p className="text-xs text-slate-500 italic">En attente de génération...</p>

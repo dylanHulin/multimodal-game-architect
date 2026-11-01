@@ -39,7 +39,8 @@ class CodeGenerationRequest(BaseModel):
 
 class AssetGenerationRequest(BaseModel):
     prompt: str
-    asset_type: Optional[str] = "sprite_sheet"
+    asset_type: Optional[str] = "sprite"
+    style: Optional[str] = "pixel art"
 
 # Instance globale de l'agent
 gdd_agent = GDDAgent()
@@ -84,5 +85,6 @@ async def generate_asset(request: AssetGenerationRequest):
 
     return await asset_agent.generate_asset(
         prompt=request.prompt,
-        asset_type=request.asset_type or "sprite_sheet"
+        asset_type=request.asset_type or "sprite",
+        style=request.style or "pixel art",
     )

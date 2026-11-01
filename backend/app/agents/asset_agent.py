@@ -56,10 +56,14 @@ class AssetAgent:
             status="placeholder",
         )
 
-    async def generate_asset(self, prompt: str, asset_type: str = "sprite_sheet") -> AssetGenerationResponse:
+    async def generate_asset(
+        self, prompt: str, asset_type: str = "sprite", style: str = "pixel art"
+    ) -> AssetGenerationResponse:
+        background = "transparent background" if asset_type == "sprite" else "plain neutral background"
         enhanced_prompt = (
             f"2D game asset, {asset_type.replace('_', ' ')}: {prompt}. "
-            "Transparent or plain background, high resolution pixel art, game-ready sprite, no text, no watermark."
+            f"Art style: {style}. {background.capitalize()}, high resolution, "
+            "game-ready, no text, no watermark."
         )
 
         if not self.api_key:
