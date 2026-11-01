@@ -27,9 +27,10 @@ class PipelineTests(unittest.TestCase):
         cls._env = patch.dict(os.environ, {"META_LLAMA_API_KEY": "", "MUSE_IMAGE_API_KEY": ""})
         cls._env.start()
         import app.main as main_module
+        import app.routers.gdd_router as router_module
         from app.agents.gdd_agent import GDDAgent
 
-        main_module.gdd_agent = GDDAgent()
+        router_module.gdd_agent = GDDAgent()
         cls.client = TestClient(main_module.app)
 
     @classmethod
@@ -49,6 +50,7 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("story_summary", body["one_sheet"])
         self.assertIsInstance(body["beat_chart"], list)
         self.assertIn("visual_style_prompt", body)
+        self.assertEqual(body["images"], [])
 
     def test_generate_gdd_one_sheet_has_no_beat_chart(self):
         resp = self.client.post(
@@ -134,12 +136,14 @@ class PipelineTests(unittest.TestCase):
         from app.agents.asset_agent import AssetAgent
 
         out = AssetAgent._sanitize_prompt(
-            "Zombie horde, blood red sky, dismembered corpses, gore and rotting flesh, killer dead"
+            "Zombie horde, blood red sky, dismembered corpses, gore and rotting flesh, "
+            "killer dead, shotgun shooting"
         )
         self.assertIn("crimson sky", out)
         self.assertIn("broken fallen figures", out)
         self.assertIn("stylized shading and weathered skin", out)
         self.assertIn("shadowy hunter ancient", out)
+        self.assertIn("blaster action", out)
         self.assertIn("non-graphic", out)
         self.assertIn("Zombie", out)  # subject preserved
         self.assertNotIn("blood red", out)
@@ -204,6 +208,22 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("crimson mist", posted[1]["input"])
         self.assertIn("non-graphic", posted[1]["input"])
 
+    def test_build_image_prompt_differs_by_asset_type(self):
+        # Regression: sprite and ui_concept prompts collapsed into generic
+        # scene descriptions, so every asset rendered as concept art.
+        from app.agents.asset_agent import AssetAgent
+
+        sprite = AssetAgent._build_image_prompt("dark cemetery scene", "sprite", "pixel art")
+        ui = AssetAgent._build_image_prompt("dark cemetery scene", "ui_concept", "pixel art")
+        concept = AssetAgent._build_image_prompt("dark cemetery scene", "concept_art", "pixel art")
+        self.assertIn("ONE character or object only", sprite)
+        self.assertIn("NO environment", sprite)
+        self.assertIn("interface", ui.lower())
+        self.assertIn("NO 3D scene", ui)
+        self.assertIn("environment shot", concept)
+        self.assertNotEqual(sprite, ui)
+        self.assertNotEqual(sprite, concept)
+
     def test_build_prompt_varies_by_doc_type(self):
         # Regression: doc_type was plumbed through but never reached the Meta prompt,
         # so every format returned similar content.
@@ -222,7 +242,7 @@ class PipelineTests(unittest.TestCase):
     def test_generate_gdd_malformed_meta_output_falls_back_to_mock(self):
         # Regression: off-schema Meta output (common on big full_gdd answers) once
         # raised an uncaught TypeError -> HTTP 500. It must fall back to mock 200.
-        import app.main as main_module
+        import app.routers.gdd_router as router_module
         from app.agents.gdd_agent import GDDAgent
         from unittest.mock import AsyncMock
 
@@ -251,17 +271,75 @@ class PipelineTests(unittest.TestCase):
                         ],
                     }
                 )
-                old = main_module.gdd_agent
-                main_module.gdd_agent = agent
+                old = router_module.gdd_agent
+                router_module.gdd_agent = agent
                 try:
                     resp = self.client.post(
                         "/api/v1/generate-gdd",
                         json={"prompt": "z", "doc_type": "full_gdd"},
                     )
                 finally:
-                    main_module.gdd_agent = old
+                    router_module.gdd_agent = old
                 self.assertEqual(resp.status_code, 200, f"{name}: {resp.text}")
                 self.assertEqual(resp.json()["status"], "mock", name)
+
+
+    def test_generate_gdd_rich_payload_with_visuals_mock(self):
+        # Refactor guard: the unified endpoint accepts the rich GDDForm
+        # payload (overrides + sections + visual configs) with MOCK_VISUALS.
+        import app.routers.gdd_router as router_module
+
+        old_flag = router_module.MOCK_VISUALS
+        router_module.MOCK_VISUALS = True
+        try:
+            resp = self.client.post(
+                "/api/v1/generate-gdd",
+                json={
+                    "doc_type": "ten_pager",
+                    "title": "My Game",
+                    "platform": "PC",
+                    "audience": "12+",
+                    "pitch": "Do stuff",
+                    "usp": "It is fun",
+                    "camera": "top_down",
+                    "character": "Hero",
+                    "controls": "WASD",
+                    "core_loop": "loop",
+                    "menu_flow": "flow",
+                    "visuals": [
+                        {"asset_type": "concept_art", "enabled": True, "count": 2},
+                        {"asset_type": "sprite", "enabled": False, "count": 5},
+                    ],
+                },
+            )
+        finally:
+            router_module.MOCK_VISUALS = old_flag
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["one_sheet"]["title"], "My Game")
+        self.assertEqual(body["one_sheet"]["story_summary"], "Do stuff")
+        self.assertEqual(body["one_sheet"]["target_systems"], ["PC"])
+        self.assertEqual(body["ten_pager"]["camera"], "top_down")
+        self.assertEqual(body["ten_pager"]["core_loop"], "loop")
+        self.assertIsNone(body.get("full_gdd"))
+        self.assertEqual(len(body["images"]), 2)
+        self.assertTrue(all(i["status"] == "mock" for i in body["images"]))
+        self.assertTrue(all(i["asset_type"] == "concept_art" for i in body["images"]))
+
+    def test_generate_gdd_rejects_missing_content(self):
+        resp = self.client.post("/api/v1/generate-gdd", json={"doc_type": "one_sheet"})
+        self.assertEqual(resp.status_code, 400)
+
+
+    def test_generate_code_unreal_mock(self):
+        resp = self.client.post(
+            "/api/v1/generate-code", json={"prompt": "double jump", "engine": "Unreal Engine"}
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["language"], "C++")
+        self.assertEqual(body["file_name"], "PlayerCharacter.h")
+        self.assertIn("ACharacter", body["code_content"])
 
 
 if __name__ == "__main__":

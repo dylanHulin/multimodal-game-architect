@@ -121,7 +121,7 @@ class GDDAgent:
                     chunks.append(block.get("text", ""))
         return "".join(chunks)
 
-    async def _call_meta_api(self, text_prompt: str) -> dict:
+    async def _call_meta_api(self, text_prompt: str, effort: str = "medium") -> dict:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -134,7 +134,7 @@ class GDDAgent:
                     "content": [{"type": "input_text", "text": text_prompt}],
                 }
             ],
-            "reasoning": {"effort": "medium"},
+            "reasoning": {"effort": effort},
             "stream": False,
         }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -148,6 +148,14 @@ class GDDAgent:
                 f"Meta response not completed: status={data.get('status')!r} details={str(data)[:500]}"
             )
         return data
+
+    async def generate_text(self, prompt: str, effort: str = "low") -> str:
+        """Single text completion. Raises on transport/API/empty failures (caller handles fallback)."""
+        data = await self._call_meta_api(prompt, effort=effort)
+        text = self._extract_output_text(data).strip()
+        if not text:
+            raise RuntimeError("Meta returned empty text.")
+        return text
 
     def _mock_response(
         self, prompt: str, doc_type: GDDType, genre: str, engine: str
@@ -301,8 +309,11 @@ class GDDAgent:
         doc_type: GDDType = GDDType.ONE_SHEET,
         genre: str = "Survie 2D",
         engine: str = "Godot 4",
+        extra_context: str = "",
     ) -> GameDesignDocumentResponse:
         doc_type = doc_type or GDDType.ONE_SHEET
+        genre = genre or "Survie 2D"
+        engine = engine or "Godot 4"
         want_beat = doc_type in (GDDType.BEAT_CHART, GDDType.FULL_GDD)
 
         if not self.api_key:
@@ -310,6 +321,8 @@ class GDDAgent:
             return self._mock_response(prompt, doc_type, genre, engine)
 
         references = await self._fetch_market_references(prompt, genre)
+        if extra_context:
+            references = f"{references}\n{extra_context}" if references else extra_context
 
         try:
             data = await self._call_meta_api(

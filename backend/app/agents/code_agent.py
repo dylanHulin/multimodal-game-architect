@@ -22,6 +22,7 @@ MODEL_ID = "muse-wonder-1.0"
 ENGINE_LANGUAGE = {
     "Godot 4": ("GDScript", "player_controller.gd"),
     "Unity": ("C#", "PlayerController.cs"),
+    "Unreal Engine": ("C++", "PlayerCharacter.h"),
 }
 
 
@@ -90,7 +91,7 @@ func _physics_process(delta: float) -> void:
 	velocity = direction * speed
 	move_and_slide()
 """
-        else:  # Unity C#
+        elif language == "C#":
             code_content = """using UnityEngine;
 
 public class PlayerController : MonoBehaviour
@@ -115,6 +116,32 @@ public class PlayerController : MonoBehaviour
         rb.MovePosition(rb.position + moveInput.normalized * speed * Time.fixedDeltaTime);
     }
 }
+"""
+        else:  # Unreal Engine C++
+            code_content = """#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Character.h"
+#include "PlayerCharacter.generated.h"
+
+UCLASS()
+class APlayerCharacter : public ACharacter
+{
+    GENERATED_BODY()
+
+public:
+    APlayerCharacter();
+
+    UPROPERTY(EditAnywhere, Category = "Movement")
+    float MoveSpeed = 600.0f;
+
+protected:
+    virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+
+private:
+    void MoveForward(float Value);
+    void MoveRight(float Value);
+};
 """
         return CodeGenerationResponse(
             engine=engine,

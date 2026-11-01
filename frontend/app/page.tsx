@@ -1,6 +1,19 @@
 'use client';
 
+import Link from 'next/link';
 import { useState } from 'react';
+import {
+  downloadBlob,
+  downloadCodePdf,
+  downloadGddPdf,
+  downloadImage,
+  gddToMarkdown,
+  gddToText,
+  slugifyFilename,
+  type CodeFormat,
+  type GddFormat,
+  type ImageFormat,
+} from '../lib/download';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000';
 
@@ -64,6 +77,9 @@ export default function Home() {
   const [assetTypes, setAssetTypes] = useState<string[]>(['sprite']);
   const [artStyle, setArtStyle] = useState('pixel art');
   const [assetList, setAssetList] = useState<AssetData[]>([]);
+  const [gddFormat, setGddFormat] = useState<GddFormat>('md');
+  const [codeFormat, setCodeFormat] = useState<CodeFormat>('source');
+  const [imgFormat, setImgFormat] = useState<ImageFormat>('png');
 
   const handleGenerate = () => {
     setLoading(true);
@@ -123,6 +139,50 @@ export default function Home() {
     });
   };
 
+  const downloadGdd = () => {
+    if (!gddData) return;
+    try {
+      const base = `gdd-${slugifyFilename(gddData.one_sheet?.title ?? 'document')}`;
+      if (gddFormat === 'json') {
+        downloadBlob(
+          new Blob([JSON.stringify(gddData, null, 2)], { type: 'application/json' }),
+          `${base}.json`,
+        );
+      } else if (gddFormat === 'txt') {
+        downloadBlob(new Blob([gddToText(gddData)], { type: 'text/plain' }), `${base}.txt`);
+      } else if (gddFormat === 'pdf') {
+        void downloadGddPdf(gddData, `${base}.pdf`).catch(() =>
+          setError('Téléchargement du GDD impossible.'),
+        );
+      } else {
+        downloadBlob(new Blob([gddToMarkdown(gddData)], { type: 'text/markdown' }), `${base}.md`);
+      }
+    } catch {
+      setError('Téléchargement du GDD impossible.');
+    }
+  };
+
+  const downloadCode = () => {
+    if (!codeData) return;
+    try {
+      const base = codeData.file_name.replace(/\.[^.]+$/, '') || 'script';
+      if (codeFormat === 'pdf') {
+        void downloadCodePdf(codeData.file_name, codeData.code_content, `${base}.pdf`).catch(() =>
+          setError('Téléchargement du script impossible.'),
+        );
+        return;
+      }
+      const name = codeFormat === 'txt' ? `${base}.txt` : codeData.file_name;
+      downloadBlob(new Blob([codeData.code_content], { type: 'text/plain' }), name);
+    } catch {
+      setError('Téléchargement du script impossible.');
+    }
+  };
+
+  const downloadAsset = (a: AssetData, i: number) => {
+    void downloadImage(a.image_url, `${a.asset_type}-${i + 1}`, imgFormat);
+  };
+
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 p-8">
       <header className="max-w-6xl mx-auto mb-10 border-b border-slate-800 pb-6 flex justify-between items-center">
@@ -132,9 +192,17 @@ export default function Home() {
             Built for Meta AI Developer Hackathon • Scott Rogers Game Design Framework
           </p>
         </div>
-        <span className="bg-blue-900/40 text-blue-400 border border-blue-500/30 px-3 py-1 rounded-full text-xs font-semibold">
-          Meta AI Pipeline
-        </span>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/gdd-form"
+            className="bg-slate-900 text-slate-200 border border-slate-700 hover:border-blue-500 px-3 py-1 rounded-full text-xs font-semibold transition"
+          >
+            Document Rogers →
+          </Link>
+          <span className="bg-blue-900/40 text-blue-400 border border-blue-500/30 px-3 py-1 rounded-full text-xs font-semibold">
+            Meta AI Pipeline
+          </span>
+        </div>
       </header>
 
       <section className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-8">
@@ -158,6 +226,7 @@ export default function Home() {
           >
             <option value="Godot 4">Godot 4 (GDScript)</option>
             <option value="Unity">Unity (C#)</option>
+            <option value="Unreal Engine">Unreal Engine (C++)</option>
           </select>
 
           <label className="block text-xs text-slate-400 mb-1">Format de Document (Rogers Framework)</label>
@@ -227,7 +296,30 @@ export default function Home() {
         <div className="md:col-span-2 space-y-6">
           {/* Section GDD */}
           <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl">
-            <h2 className="text-lg font-bold text-blue-400 mb-2">📄 Game Design Document (GDD Agent)</h2>
+            <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
+              <h2 className="text-lg font-bold text-blue-400">📄 Game Design Document (GDD Agent)</h2>
+              {gddData && (
+                <div className="flex items-center gap-2">
+                  <select
+                    aria-label="Format du GDD"
+                    className="bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs text-slate-200"
+                    value={gddFormat}
+                    onChange={(e) => setGddFormat(e.target.value as GddFormat)}
+                  >
+                    <option value="md">Markdown</option>
+                    <option value="json">JSON</option>
+                    <option value="txt">Texte</option>
+                    <option value="pdf">PDF</option>
+                  </select>
+                  <button
+                    onClick={downloadGdd}
+                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
+                  >
+                    Télécharger
+                  </button>
+                </div>
+              )}
+            </div>
             {gddData ? (
               <div className="space-y-4 text-sm text-slate-300">
                 <p><strong className="text-white">Titre :</strong> {gddData.one_sheet?.title}</p>
@@ -267,7 +359,29 @@ export default function Home() {
 
           {/* Section Code */}
           <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl">
-            <h2 className="text-lg font-bold text-emerald-400 mb-2">💻 Script de Contrôleur (Code Agent)</h2>
+            <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
+              <h2 className="text-lg font-bold text-emerald-400">💻 Script de Contrôleur (Code Agent)</h2>
+              {codeData && (
+                <div className="flex items-center gap-2">
+                  <select
+                    aria-label="Format du script"
+                    className="bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs text-slate-200"
+                    value={codeFormat}
+                    onChange={(e) => setCodeFormat(e.target.value as CodeFormat)}
+                  >
+                    <option value="source">Fichier source</option>
+                    <option value="txt">Texte (.txt)</option>
+                    <option value="pdf">PDF</option>
+                  </select>
+                  <button
+                    onClick={downloadCode}
+                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
+                  >
+                    Télécharger
+                  </button>
+                </div>
+              )}
+            </div>
             {codeData ? (
               <div>
                 <span className="text-xs font-mono text-emerald-500 mb-2 block">{codeData.file_name} ({codeData.language})</span>
@@ -285,12 +399,35 @@ export default function Home() {
 
           {/* Section Assets Visuels */}
           <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl">
-            <h2 className="text-lg font-bold text-purple-400 mb-2">🎨 Assets Visuels (Meta Muse Image Agent)</h2>
+            <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
+              <h2 className="text-lg font-bold text-purple-400">🎨 Assets Visuels (Meta Muse Image Agent)</h2>
+              {assetList.length > 0 && (
+                <select
+                  aria-label="Format des images"
+                  className="bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs text-slate-200"
+                  value={imgFormat}
+                  onChange={(e) => setImgFormat(e.target.value as ImageFormat)}
+                >
+                  <option value="png">PNG</option>
+                  <option value="jpg">JPEG</option>
+                  <option value="webp">WEBP</option>
+                  <option value="pdf">PDF</option>
+                </select>
+              )}
+            </div>
             {assetList.length > 0 ? (
               <div className="space-y-4">
                 {assetList.map((a, idx) => (
                   <div key={idx} className="space-y-2 border-b border-slate-800 pb-4 last:border-0 last:pb-0">
-                    <p className="text-xs font-mono text-purple-400">{a.asset_type}</p>
+                    <div className="flex justify-between items-center">
+                      <p className="text-xs font-mono text-purple-400">{a.asset_type}</p>
+                      <button
+                        onClick={() => downloadAsset(a, idx)}
+                        className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
+                      >
+                        Télécharger
+                      </button>
+                    </div>
                     <p className="text-xs text-slate-400"><strong>Prompt :</strong> {a.prompt_used}</p>
                     <img src={a.image_url} alt={`Generated ${a.asset_type}`} className="w-full max-w-sm rounded-lg border border-slate-800 bg-slate-950" />
                     {a.status !== 'success' && (

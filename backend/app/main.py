@@ -1,14 +1,20 @@
+from pathlib import Path
+
+from dotenv import load_dotenv  # type: ignore
+
+# Load backend/.env FIRST (anchored to this file, not the cwd: uvicorn may be
+# started from the repo root with --app-dir) and BEFORE importing agents, which
+# read their keys at construction time.
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
+
 from fastapi import FastAPI, HTTPException  # type: ignore
 from fastapi.middleware.cors import CORSMiddleware  # type: ignore
 from pydantic import BaseModel  # type: ignore
 from typing import Optional
-from dotenv import load_dotenv  # type: ignore
 
-from app.agents.gdd_agent import GDDAgent, GDDType, GameDesignDocumentResponse
 from app.agents.code_agent import CodeGenAgent, CodeGenerationResponse  # type: ignore
 from app.agents.asset_agent import AssetAgent, AssetGenerationResponse  # type: ignore
-
-load_dotenv()  # Charge les variables du fichier .env
+from app.routers.gdd_router import router as gdd_router
 
 app = FastAPI(
     title="MultiModal GameArchitect API",
@@ -27,11 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class GameConceptRequest(BaseModel):
-    prompt: str
-    doc_type: Optional[GDDType] = GDDType.ONE_SHEET
-    genre: Optional[str] = "Survie 2D"
-    engine: Optional[str] = "Godot 4"
+app.include_router(gdd_router)
 
 class CodeGenerationRequest(BaseModel):
     prompt: str
@@ -42,8 +44,7 @@ class AssetGenerationRequest(BaseModel):
     asset_type: Optional[str] = "sprite"
     style: Optional[str] = "pixel art"
 
-# Instance globale de l'agent
-gdd_agent = GDDAgent()
+# Instances globales des agents (le GDD vit dans app.routers.gdd_router)
 code_agent = CodeGenAgent()
 asset_agent = AssetAgent()
 
@@ -54,19 +55,6 @@ def read_root():
         "project": "MultiModal-GameArchitect",
         "framework": "Scott Rogers (Level Up!)"
     }
-
-@app.post("/api/v1/generate-gdd", response_model=GameDesignDocumentResponse)
-async def generate_gdd(request: GameConceptRequest):
-    if not request.prompt:
-        raise HTTPException(status_code=400, detail="Le prompt ne peut pas être vide.")
-
-    result = await gdd_agent.generate_document(
-        prompt=request.prompt,
-        doc_type=request.doc_type,
-        genre=request.genre,
-        engine=request.engine
-    )
-    return result
 
 @app.post("/api/v1/generate-code", response_model=CodeGenerationResponse)
 async def generate_code(request: CodeGenerationRequest):

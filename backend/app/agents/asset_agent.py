@@ -51,6 +51,21 @@ _POLICY_REPLACEMENTS = [
     (r"\bgun\b", "retro blaster"),
     (r"\bknives\b", "tools"),
     (r"\bknife\b", "tool"),
+    (r"shotguns", "blasters"),
+    (r"shotgun", "blaster"),
+    (r"rifles", "blasters"),
+    (r"rifle", "blaster"),
+    (r"pistols", "blasters"),
+    (r"pistol", "blaster"),
+    (r"weapons", "gear"),
+    (r"weapon", "gear"),
+    (r"\bshooting\b", "action"),
+    (r"\bshoots\b", "zaps"),
+    (r"\bshoot\b", "zap"),
+    (r"ammunition", "supplies"),
+    (r"\bammo\b", "supplies"),
+    (r"bullets", "tracers"),
+    (r"bullet", "tracer"),
 ]
 
 
@@ -151,15 +166,48 @@ class AssetAgent:
             logger.exception("Unexpected Meta Image call failure; falling back to placeholder.")
             return None
 
+    @staticmethod
+    def _build_image_prompt(prompt: str, asset_type: str, style: str) -> str:
+        """Per-type prompt templates.
+
+        The chained GDD style prompt describes a full scene, which drags every
+        asset toward concept art unless the type constraints dominate: each
+        template states the type FIRST, frames the incoming prompt as a mere
+        mood/palette reference for non-scene types, and repeats hard negative
+        constraints at the END.
+        """
+        if asset_type == "sprite":
+            return (
+                "Single 2D game sprite: ONE character or object only, centered, "
+                "full body, facing the viewer. "
+                f"Art style: {style}. "
+                f"Universe and palette reference (mood ONLY, do NOT paint this scene): {prompt}. "
+                "Isolated on a plain solid neutral background (easy to cut out). "
+                "Strict constraints: NO environment, NO landscape, NO scenery, "
+                "NO other characters, NO text, NO watermark."
+            )
+        if asset_type == "ui_concept":
+            return (
+                "Video game UI concept mockup: flat front-facing 2D interface layout "
+                "(HUD bars, inventory slots, menu buttons, icons). "
+                f"Art style: {style}. "
+                f"Color and mood reference (ONLY, do NOT paint a scene): {prompt}. "
+                "Clean dark interface backdrop. "
+                "Strict constraints: interface elements ONLY, NO 3D scene, "
+                "NO landscape, NO characters, NO photo, NO watermark."
+            )
+        # concept_art and anything else: full environment scene.
+        subject = asset_type.replace("_", " ")
+        return (
+            f"2D game {subject}: {prompt}. "
+            f"Art style: {style}. Cinematic wide environment shot, highly detailed, "
+            "atmospheric lighting, high resolution, game-ready, no text, no watermark."
+        )
+
     async def generate_asset(
         self, prompt: str, asset_type: str = "sprite", style: str = "pixel art"
     ) -> AssetGenerationResponse:
-        background = "transparent background" if asset_type == "sprite" else "plain neutral background"
-        enhanced_prompt = (
-            f"2D game asset, {asset_type.replace('_', ' ')}: {prompt}. "
-            f"Art style: {style}. {background.capitalize()}, high resolution, "
-            "game-ready, no text, no watermark."
-        )
+        enhanced_prompt = self._build_image_prompt(prompt, asset_type, style)
 
         if not self.api_key:
             logger.warning("MUSE_IMAGE_API_KEY missing: serving placeholder asset (no Meta call made).")
