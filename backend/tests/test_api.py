@@ -130,6 +130,80 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(body["code_content"], "extends CharacterBody2D\n\n@export var speed := 200.0")
         self.assertEqual(body["language"], "GDScript")
 
+    def test_sanitize_prompt_removes_gore_triggers(self):
+        from app.agents.asset_agent import AssetAgent
+
+        out = AssetAgent._sanitize_prompt(
+            "Zombie horde, blood red sky, dismembered corpses, gore and rotting flesh, killer dead"
+        )
+        self.assertIn("crimson sky", out)
+        self.assertIn("broken fallen figures", out)
+        self.assertIn("stylized shading and weathered skin", out)
+        self.assertIn("shadowy hunter ancient", out)
+        self.assertIn("non-graphic", out)
+        self.assertIn("Zombie", out)  # subject preserved
+        self.assertNotIn("blood red", out)
+
+    def test_generate_asset_retries_sanitized_on_policy_violation(self):
+        # Regression: chained GDD style prompts trip Meta's image content
+        # filter (400). The agent must retry once sanitized, not placeholder.
+        import app.main as main_module
+        import httpx
+        from app.agents.asset_agent import AssetAgent
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        resp_400 = MagicMock()
+        resp_400.status_code = 400
+        resp_400.text = '{"error":{"code":"content_policy_violation","message":"filtered"}}'
+        resp_400.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError("400", request=MagicMock(), response=resp_400)
+        )
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.text = "{}"
+        resp_200.json = MagicMock(
+            return_value={
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "image_generation_call",
+                        "status": "completed",
+                        "result": "UklGR" + "A" * 203,
+                    }
+                ],
+            }
+        )
+        resp_200.raise_for_status = MagicMock()
+        posted = []
+
+        async def fake_post(url, headers=None, json=None, **kwargs):
+            posted.append(json)
+            return resp_400 if len(posted) == 1 else resp_200
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.post = fake_post
+
+        agent = AssetAgent(api_key="dummy-test-key")
+        old = main_module.asset_agent
+        main_module.asset_agent = agent
+        try:
+            with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+                resp = self.client.post(
+                    "/api/v1/generate-asset",
+                    json={"prompt": "blood and gore everywhere", "asset_type": "sprite"},
+                )
+        finally:
+            main_module.asset_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "success")
+        self.assertTrue(body["image_url"].startswith("data:image/"))
+        self.assertEqual(len(posted), 2)
+        self.assertIn("crimson mist", posted[1]["input"])
+        self.assertIn("non-graphic", posted[1]["input"])
+
     def test_build_prompt_varies_by_doc_type(self):
         # Regression: doc_type was plumbed through but never reached the Meta prompt,
         # so every format returned similar content.

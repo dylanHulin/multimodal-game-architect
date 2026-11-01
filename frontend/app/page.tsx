@@ -72,31 +72,50 @@ export default function Home() {
     setCodeData(null);
     setAssetList([]);
 
-    // Independent calls: each section displays as soon as its own result
-    // arrives (code + asset in ~1s; the real Meta GDD call takes 1-2 min).
     const failures: string[] = [];
     const onError = (label: string) => (err: unknown) => {
       failures.push(`${label} : ${err instanceof Error ? err.message : 'Unknown error'}`);
     };
 
-    const pending = [
-      apiFetch<GddData>('/api/v1/generate-gdd', { prompt, doc_type: docType, engine }).then(
-        setGddData,
-        onError('GDD'),
-      ),
-      apiFetch<CodeData>('/api/v1/generate-code', { prompt, engine }).then(
-        setCodeData,
-        onError('Code'),
-      ),
-      ...assetTypes.map((t) =>
-        apiFetch<AssetData>('/api/v1/generate-asset', { prompt, asset_type: t, style: artStyle }).then(
-          (a) => setAssetList((prev) => [...prev, a]),
-          onError(`Asset (${t})`),
-        ),
-      ),
-    ];
+    // Code is independent: fire immediately.
+    const codeP = apiFetch<CodeData>('/api/v1/generate-code', { prompt, engine }).then(
+      setCodeData,
+      onError('Code'),
+    );
 
-    void Promise.all(pending).then(() => {
+    // Assets are chained on the GDD: they use its visual_style_prompt so the
+    // art direction matches the document (raw prompt if the GDD fails).
+    const assetsP = apiFetch<GddData>('/api/v1/generate-gdd', {
+      prompt,
+      doc_type: docType,
+      engine,
+    })
+      .then(
+        (g) => {
+          setGddData(g);
+          return g.visual_style_prompt || prompt;
+        },
+        (err: unknown) => {
+          onError('GDD')(err);
+          return prompt;
+        },
+      )
+      .then((stylePrompt) =>
+        Promise.all(
+          assetTypes.map((t) =>
+            apiFetch<AssetData>('/api/v1/generate-asset', {
+              prompt: stylePrompt,
+              asset_type: t,
+              style: artStyle,
+            }).then(
+              (a) => setAssetList((prev) => [...prev, a]),
+              onError(`Asset (${t})`),
+            ),
+          ),
+        ),
+      );
+
+    void Promise.all([codeP, assetsP]).then(() => {
       if (failures.length > 0) {
         setError(failures.join('\n'));
       }
@@ -242,7 +261,7 @@ export default function Home() {
                 )}
               </div>
             ) : (
-              <p className="text-xs text-slate-500 italic">En attente de génération...</p>
+              <p className="text-xs text-slate-500 italic">{loading ? 'Génération en cours...' : 'En attente de génération...'}</p>
             )}
           </div>
 
@@ -260,7 +279,7 @@ export default function Home() {
                 </pre>
               </div>
             ) : (
-              <p className="text-xs text-slate-500 italic">En attente de génération...</p>
+              <p className="text-xs text-slate-500 italic">{loading ? 'Génération en cours...' : 'En attente de génération...'}</p>
             )}
           </div>
 
@@ -281,7 +300,7 @@ export default function Home() {
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-slate-500 italic">En attente de génération...</p>
+              <p className="text-xs text-slate-500 italic">{loading ? 'En attente du style visuel (GDD)...' : 'En attente de génération...'}</p>
             )}
           </div>
         </div>

@@ -1,10 +1,19 @@
 import os
+import asyncio
 import json
 import logging
+import re
 import httpx
 from enum import Enum
 from pydantic import BaseModel
 from typing import List, Optional
+
+from app.services.gaming_data_tools import (
+    get_igdb_metadata,
+    get_rawg_game_details,
+    get_steam_reviews,
+    search_rawg_games,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +63,9 @@ class GDDAgent:
         # Reasoning models need generous read timeouts: 10s connect, 120s read.
         self.timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
 
-    def _build_prompt(self, prompt: str, genre: str, engine: str, doc_type: GDDType) -> str:
+    def _build_prompt(
+        self, prompt: str, genre: str, engine: str, doc_type: GDDType, references: str = ""
+    ) -> str:
         want_beat_chart = doc_type in (GDDType.BEAT_CHART, GDDType.FULL_GDD)
         guidance = {
             GDDType.ONE_SHEET: (
@@ -82,9 +93,13 @@ class GDDAgent:
             ' "mechanics_introduced": [str], "enemies_introduced": [str],'
             ' "estimated_play_time": str}],' if want_beat_chart else ""
         )
+        refs_block = f"{references}\n" if references else ""
         return (
             f"Generate a game concept for this need: '{prompt}'. Genre: {genre}, Engine: {engine}.\n"
+            f"{refs_block}"
             f"{guidance}\n"
+            "Keep visual_style_prompt vivid but non-graphic (no blood or gore details): "
+            "it doubles as an image-generation prompt.\n"
             "Respond with VALID JSON ONLY, no markdown fences, no commentary, matching exactly this schema:\n"
             "{\n"
             '  "one_sheet": {"title": str, "target_systems": [str], "target_age": str,'
@@ -165,6 +180,121 @@ class GDDAgent:
             status="mock",
         )
 
+    async def _fetch_steam_sentiment(self, rawg: Any) -> str:
+        """Steam player sentiment for the top RAWG hit. "" when unavailable. Never raises."""
+        try:
+            if not isinstance(rawg, dict) or rawg.get("error"):
+                return ""
+            games = [g for g in rawg.get("games", []) or [] if isinstance(g, dict)]
+            if not games or not games[0].get("slug"):
+                return ""
+            detail = await get_rawg_game_details(str(games[0]["slug"]))
+            if not isinstance(detail, dict) or detail.get("error"):
+                return ""
+            store_urls = " ".join(
+                str(s.get("url") or "")
+                for s in detail.get("stores", []) or []
+                if isinstance(s, dict)
+            )
+            blob = f"{detail.get('website') or ''} {detail.get('description') or ''} {store_urls}"
+            match = re.search(r"store\.steampowered\.com/app/(\d+)", blob)
+            if not match:
+                return ""
+            steam = await get_steam_reviews(int(match.group(1)))
+            if not isinstance(steam, dict) or steam.get("error") or not steam.get("summary"):
+                return ""
+            summary = steam.get("summary") or {}
+            praise: List[str] = []
+            complaints: List[str] = []
+            for rev in steam.get("sample_reviews", []) or []:
+                if not isinstance(rev, dict) or not rev.get("text"):
+                    continue
+                target = praise if rev.get("recommended") else complaints
+                if len(target) < 2:
+                    target.append(f"\"{str(rev['text'])[:200]}\"")
+            meta = ", ".join(
+                p
+                for p in [
+                    str(summary.get("score_desc") or ""),
+                    f"{summary.get('positive_pct')}% positive"
+                    if summary.get("positive_pct") is not None
+                    else "",
+                    f"{summary.get('total_reviews')} reviews" if summary.get("total_reviews") else "",
+                ]
+                if p
+            )
+            block = f"Steam players on {detail.get('name') or 'a similar game'}"
+            if meta:
+                block += f" [{meta}]"
+            block += ":"
+            if praise:
+                block += "\nPlayers praise: " + " ".join(praise)
+            if complaints:
+                block += "\nPlayers complain about: " + " ".join(complaints)
+            if not meta and not praise and not complaints:
+                return ""
+            return block
+        except Exception:
+            logger.exception("Steam sentiment enrichment failed; skipping.")
+            return ""
+
+    async def _fetch_market_references(self, prompt: str, genre: Optional[str]) -> str:
+        """Best-effort live market data (RAWG + IGDB + Steam). "" when unusable. Never raises."""
+        try:
+            rawg, igdb = await asyncio.gather(
+                search_rawg_games(query=prompt[:120], genre=genre),
+                get_igdb_metadata(theme=prompt[:80]),
+            )
+            lines: List[str] = []
+            if isinstance(rawg, dict) and not rawg.get("error"):
+                items: List[str] = []
+                for game in [g for g in rawg.get("games", []) or [] if isinstance(g, dict)][:5]:
+                    try:
+                        bits = [str(game.get("name") or "?")]
+                        if game.get("released"):
+                            bits.append(str(game["released"])[:4])
+                        if game.get("rating") is not None:
+                            bits.append(f"rating {game['rating']}")
+                        genres = ", ".join(str(x) for x in (game.get("genres") or [])[:3])
+                        if genres:
+                            bits.append(genres)
+                        items.append(" - " + " | ".join(bits))
+                    except Exception:
+                        continue
+                if items:
+                    lines.append(
+                        "Similar games on RAWG (use for competitive_products):\n" + "\n".join(items)
+                    )
+            steam_block = await self._fetch_steam_sentiment(rawg)
+            if steam_block:
+                lines.append(steam_block)
+            if isinstance(igdb, dict) and not igdb.get("error"):
+                items = []
+                for game in [g for g in igdb.get("games", []) or [] if isinstance(g, dict)][:5]:
+                    try:
+                        bits = [str(game.get("name") or "?")]
+                        modes = ", ".join(str(x) for x in (game.get("game_modes") or [])[:3])
+                        if modes:
+                            bits.append(modes)
+                        if game.get("rating") is not None:
+                            bits.append(f"rating {round(float(game['rating']))}")
+                        items.append(" - " + " | ".join(bits))
+                    except Exception:
+                        continue
+                if items:
+                    lines.append(
+                        "IGDB thematic references (gameplay inspiration):\n" + "\n".join(items)
+                    )
+            if not lines:
+                return ""
+            return (
+                "MARKET REFERENCES (live data — ground competitive_products, "
+                "USPs and genre conventions in these):\n" + "\n".join(lines)
+            )
+        except Exception:
+            logger.exception("Market reference enrichment failed; continuing without it.")
+            return ""
+
     async def generate_document(
         self,
         prompt: str,
@@ -179,8 +309,12 @@ class GDDAgent:
             logger.warning("META_LLAMA_API_KEY missing: serving mock GDD (no Meta call made).")
             return self._mock_response(prompt, doc_type, genre, engine)
 
+        references = await self._fetch_market_references(prompt, genre)
+
         try:
-            data = await self._call_meta_api(self._build_prompt(prompt, genre, engine, doc_type))
+            data = await self._call_meta_api(
+                self._build_prompt(prompt, genre, engine, doc_type, references)
+            )
         except httpx.HTTPStatusError as e:
             logger.error("Meta API HTTP %s: %s", e.response.status_code, e.response.text[:500])
             return self._mock_response(prompt, doc_type, genre, engine)
