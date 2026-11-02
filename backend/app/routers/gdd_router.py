@@ -22,6 +22,7 @@ from app.agents.asset_agent import AssetAgent
 from app.agents.gdd_agent import GDDAgent, GDDType, GameDesignDocumentResponse
 from app.agents.review_agent import GDDFixResponse, GDDReviewResponse, ReviewAgent, Suggestion
 from app.auth import user_api_key
+from app.security import is_safe_fetch_url
 from app.services.pdf_layout import render_gdd_pdf
 
 logger = logging.getLogger(__name__)
@@ -307,6 +308,7 @@ async def generate_gdd(
         effective = " — ".join(seeds)
     if not effective:
         raise HTTPException(status_code=400, detail="Le prompt ne peut pas être vide.")
+    effective = effective[:4000]
 
     gdd = gdd_agent
     if user_key is not None:
@@ -318,7 +320,7 @@ async def generate_gdd(
         doc_type=doc,
         genre=request.genre or "Survie 2D",
         engine=request.engine or "Godot 4",
-        extra_context=_user_facts_block(request, doc),
+        extra_context=_user_facts_block(request, doc)[:4000],
     )
 
     # Hard overrides: user-provided one-sheet facts win over generated text.
@@ -394,6 +396,8 @@ async def generate_gdd(
 async def review_gdd(request: ReviewRequest, user_key: Optional[str] = Depends(user_api_key)):
     if not (request.document or "").strip():
         raise HTTPException(status_code=400, detail="Le document à auditer ne peut pas être vide.")
+    if len(request.document) > 100_000:
+        raise HTTPException(status_code=400, detail="Document trop volumineux (100 Ko max).")
     agent = review_agent
     if user_key is not None:
         logger.info("review-gdd: using user-provided API key.")
@@ -408,6 +412,8 @@ async def review_gdd(request: ReviewRequest, user_key: Optional[str] = Depends(u
 async def fix_gdd(request: FixRequest, user_key: Optional[str] = Depends(user_api_key)):
     if not (request.document or "").strip():
         raise HTTPException(status_code=400, detail="Le document à auditer ne peut pas être vide.")
+    if len(request.document) > 100_000:
+        raise HTTPException(status_code=400, detail="Document trop volumineux (100 Ko max).")
     if not request.apply_ids:
         raise HTTPException(status_code=400, detail="Sélectionnez au moins une suggestion.")
     agent = review_agent
@@ -452,6 +458,8 @@ async def _fetch_cover(images: List[Dict[str, Any]]) -> Optional[bytes]:
                 continue
             return raw if 0 < len(raw) <= 6 * 1024 * 1024 else None
         if url.startswith(("http://", "https://")):
+            if not is_safe_fetch_url(url):
+                continue
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.get(url, follow_redirects=True)
@@ -472,8 +480,10 @@ async def gdd_pdf(request: StyledPdfRequest):
         raise HTTPException(status_code=400, detail="Style PDF inconnu (pro ou gamebook).")
     if not request.gdd:
         raise HTTPException(status_code=400, detail="Le document PDF ne peut pas être vide.")
+    if len(json.dumps(request.gdd, default=str)) > 200_000:
+        raise HTTPException(status_code=400, detail="Document trop volumineux (200 Ko max).")
     cover = await _fetch_cover(request.images)
-    pdf, err = render_gdd_pdf(request.gdd, request.style, cover)
+    pdf, err = await asyncio.to_thread(render_gdd_pdf, request.gdd, request.style, cover)
     if err is not None or pdf is None:
         return StyledPdfResponse(status="error", error=err or "Génération PDF impossible.")
     return StyledPdfResponse(

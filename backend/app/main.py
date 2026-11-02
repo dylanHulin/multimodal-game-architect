@@ -7,6 +7,7 @@ from dotenv import load_dotenv  # type: ignore
 # read their keys at construction time.
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
+import asyncio
 import base64
 import binascii
 import logging
@@ -18,6 +19,7 @@ from pydantic import BaseModel  # type: ignore
 from typing import Optional
 
 from app.agents.code_agent import CodeGenAgent, CodeGenerationResponse  # type: ignore
+from app.security import RateLimitMiddleware, is_safe_fetch_url  # type: ignore
 from app.agents.asset_agent import AssetAgent, AssetGenerationResponse  # type: ignore
 from app.agents.music_agent import (  # type: ignore
     Mp3ConversionResponse,
@@ -48,6 +50,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RateLimitMiddleware)
 
 app.include_router(gdd_router)
 
@@ -102,8 +105,8 @@ async def generate_code(
         logger.info("generate-code: using user-provided API key.")
         agent = CodeGenAgent(api_key=user_key)
     return await agent.generate_script(
-        prompt=request.prompt,
-        engine=request.engine or "Godot 4"
+        prompt=(request.prompt or "")[:4000],
+        engine=(request.engine or "Godot 4")[:60]
     )
 
 @app.post("/api/v1/generate-asset", response_model=AssetGenerationResponse)
@@ -130,7 +133,7 @@ async def cutout(request: CutoutRequest, user_key: Optional[str] = Depends(user_
         return CutoutResponse(status="error", concept=concept[:60], error="Concept trop long (60 max).")
     data_url = request.image_url or ""
     if not data_url.startswith("data:"):
-        if not data_url.startswith(("http://", "https://")):
+        if not data_url.startswith(("http://", "https://")) or not is_safe_fetch_url(data_url):
             return CutoutResponse(status="error", concept=concept, error="image_url invalide.")
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=60.0)) as client:
@@ -186,11 +189,11 @@ async def generate_music(
         logger.info("generate-music: using caller-provided Replicate key.")
         agent = MusicAgent(api_key=rep_key)
     return await agent.generate_music(
-        prompt=request.prompt,
-        style=request.style or "",
+        prompt=(request.prompt or "").strip()[:500],
+        style=(request.style or "").strip()[:120],
         duration_sec=request.duration_sec or 10.0,
     )
 
 @app.post("/api/v1/music-to-mp3", response_model=Mp3ConversionResponse)
 async def music_to_mp3(request: Mp3ConversionRequest):
-    return convert_to_mp3(request.audio_base64)
+    return await asyncio.to_thread(convert_to_mp3, request.audio_base64)
