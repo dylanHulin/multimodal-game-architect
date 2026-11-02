@@ -7,8 +7,11 @@ from dotenv import load_dotenv  # type: ignore
 # read their keys at construction time.
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
+import base64
+import binascii
 import logging
 
+import httpx  # type: ignore
 from fastapi import Depends, FastAPI, HTTPException  # type: ignore
 from fastapi.middleware.cors import CORSMiddleware  # type: ignore
 from pydantic import BaseModel  # type: ignore
@@ -16,6 +19,8 @@ from typing import Optional
 
 from app.agents.code_agent import CodeGenAgent, CodeGenerationResponse  # type: ignore
 from app.agents.asset_agent import AssetAgent, AssetGenerationResponse  # type: ignore
+from app.agents.sam_agent import CutoutResponse, SamAgent  # type: ignore
+from app.agents.voice_agent import VoiceAgent, VoiceTranscribeResponse  # type: ignore
 from app.auth import user_api_key  # type: ignore
 from app.routers.gdd_router import router as gdd_router
 
@@ -49,9 +54,18 @@ class AssetGenerationRequest(BaseModel):
     asset_type: Optional[str] = "sprite"
     style: Optional[str] = "pixel art"
 
+class CutoutRequest(BaseModel):
+    image_url: str
+    concept: Optional[str] = "character"
+
+class TranscribeRequest(BaseModel):
+    audio_base64: str
+
 # Instances globales des agents (le GDD vit dans app.routers.gdd_router)
 code_agent = CodeGenAgent()
 asset_agent = AssetAgent()
+sam_agent = SamAgent()
+voice_agent = VoiceAgent()
 
 @app.get("/")
 def read_root():
@@ -93,3 +107,52 @@ async def generate_asset(
         asset_type=request.asset_type or "sprite",
         style=request.style or "pixel art",
     )
+
+@app.post("/api/v1/cutout", response_model=CutoutResponse)
+async def cutout(request: CutoutRequest, user_key: Optional[str] = Depends(user_api_key)):
+    concept = (request.concept or "character").strip() or "character"
+    if len(concept) > 60:
+        return CutoutResponse(status="error", concept=concept[:60], error="Concept trop long (60 max).")
+    data_url = request.image_url or ""
+    if not data_url.startswith("data:"):
+        if not data_url.startswith(("http://", "https://")):
+            return CutoutResponse(status="error", concept=concept, error="image_url invalide.")
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=60.0)) as client:
+                resp = await client.get(data_url, follow_redirects=True)
+            resp.raise_for_status()
+            raw = resp.content
+        except Exception as exc:
+            logger.warning("cutout: could not fetch image_url: %s", exc)
+            return CutoutResponse(status="error", concept=concept, error="Image distante illisible.")
+        if len(raw) > 10 * 1024 * 1024:
+            return CutoutResponse(status="error", concept=concept, error="Image trop lourde (10 Mo max).")
+        mime = (resp.headers.get("content-type") or "image/png").split(";")[0].strip() or "image/png"
+        if not mime.startswith("image/"):
+            return CutoutResponse(status="error", concept=concept, error="URL distante : pas une image.")
+        data_url = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+    if len(data_url) > 15 * 1024 * 1024:
+        return CutoutResponse(status="error", concept=concept, error="Image trop lourde.")
+
+    agent = sam_agent
+    if user_key is not None:
+        logger.info("cutout: using user-provided API key.")
+        agent = SamAgent(api_key=user_key)
+    return await agent.cutout_masks(data_url, concept)
+
+@app.post("/api/v1/transcribe", response_model=VoiceTranscribeResponse)
+async def transcribe(request: TranscribeRequest, user_key: Optional[str] = Depends(user_api_key)):
+    try:
+        wav = base64.b64decode(request.audio_base64 or "", validate=True)
+    except (binascii.Error, ValueError):
+        return VoiceTranscribeResponse(status="error", error="Audio base64 invalide.")
+    if len(wav) > 6 * 1024 * 1024:
+        return VoiceTranscribeResponse(status="error", error="Audio trop long (6 Mo max).")
+    if len(wav) < 44 or not wav.startswith(b"RIFF") or wav[8:12] != b"WAVE":
+        return VoiceTranscribeResponse(status="error", error="Format WAV requis.")
+
+    agent = voice_agent
+    if user_key is not None:
+        logger.info("transcribe: using user-provided API key.")
+        agent = VoiceAgent(api_key=user_key)
+    return await agent.transcribe(wav)

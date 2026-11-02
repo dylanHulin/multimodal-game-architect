@@ -1,9 +1,27 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, useSyncExternalStore } from 'react';
+import dynamic from 'next/dynamic';
+import { Suspense, useEffect, useState, useSyncExternalStore } from 'react';
 import APIKeyModal from '../components/APIKeyModal';
+import CutoutPanel from '../components/CutoutPanel';
+import DictationButton from '../components/DictationButton';
+import GenerationProgress, { type ProgressStage } from '../components/GenerationProgress';
+import HistoryPanel from '../components/HistoryPanel';
 import { authHeaders, getUserApiKeySet, subscribeUserApiKey } from '../lib/apiKey';
+import {
+  COST_CODE_USD,
+  COST_IMAGE_USD,
+  addSessionSpend,
+  estimateGdd,
+  estimateRun,
+  formatCost,
+  getSpendSnapshot,
+  subscribeSpend,
+} from '../lib/cost';
+import type { DemoBundle } from '../lib/demo';
+import { pushHistory, type HistoryEntry } from '../lib/history';
+import { speakText, stopSpeaking } from '../lib/speech';
 import {
   downloadBlob,
   downloadCodePdf,
@@ -16,6 +34,9 @@ import {
   type GddFormat,
   type ImageFormat,
 } from '../lib/download';
+
+// Client-only: the manifest fetch resolves differently on server vs client.
+const ExamplesRow = dynamic(() => import('../components/ExamplesRow'), { ssr: false });
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000';
 
@@ -52,6 +73,8 @@ interface AssetData {
   prompt_used: string;
   image_url: string;
   status: string;
+  basePrompt?: string;
+  style?: string;
 }
 
 async function apiFetch<T>(path: string, body: unknown): Promise<T> {
@@ -84,22 +107,39 @@ export default function Home() {
   const [imgFormat, setImgFormat] = useState<ImageFormat>('png');
   const [keyOpen, setKeyOpen] = useState(false);
   const hasKey = useSyncExternalStore(subscribeUserApiKey, getUserApiKeySet, () => false);
+  const [runId, setRunId] = useState(0);
+  const spend = useSyncExternalStore(subscribeSpend, getSpendSnapshot, () => 0);
+  const [regenGddBusy, setRegenGddBusy] = useState(false);
+  const [regenCodeBusy, setRegenCodeBusy] = useState(false);
+  const [regenAssetBusy, setRegenAssetBusy] = useState<Record<number, boolean>>({});
+  const [speaking, setSpeaking] = useState(false);
+
+  useEffect(() => () => stopSpeaking(), []);
 
   const handleGenerate = () => {
+    stopSpeaking();
+    setSpeaking(false);
     setLoading(true);
     setError(null);
     setGddData(null);
     setCodeData(null);
     setAssetList([]);
+    setRunId((n) => n + 1);
 
     const failures: string[] = [];
     const onError = (label: string) => (err: unknown) => {
       failures.push(`${label} : ${err instanceof Error ? err.message : 'Unknown error'}`);
     };
+    let doneGdd: GddData | null = null;
+    let doneCode: CodeData | null = null;
+    const doneAssets: AssetData[] = [];
 
     // Code is independent: fire immediately.
     const codeP = apiFetch<CodeData>('/api/v1/generate-code', { prompt, engine }).then(
-      setCodeData,
+      (d) => {
+        doneCode = d;
+        setCodeData(d);
+      },
       onError('Code'),
     );
 
@@ -112,6 +152,7 @@ export default function Home() {
     })
       .then(
         (g) => {
+          doneGdd = g;
           setGddData(g);
           return g.visual_style_prompt || prompt;
         },
@@ -128,20 +169,146 @@ export default function Home() {
               asset_type: t,
               style: artStyle,
             }).then(
-              (a) => setAssetList((prev) => [...prev, a]),
+              (a) => {
+                const full = { ...a, basePrompt: stylePrompt, style: artStyle };
+                doneAssets.push(full);
+                setAssetList((prev) => [...prev, full]);
+              },
               onError(`Asset (${t})`),
             ),
           ),
         ),
       );
 
-    void Promise.all([codeP, assetsP]).then(() => {
+    void Promise.all([codeP, assetsP]).then(async () => {
       if (failures.length > 0) {
         setError(failures.join('\n'));
+      }
+      if (doneGdd) {
+        addSessionSpend(estimateRun(docType, doneAssets.length, doneCode !== null));
+        await pushHistory('main', {
+          title: doneGdd.one_sheet?.title ?? 'Sans titre',
+          docType: doneGdd.document_type,
+          gdd: doneGdd,
+          code: doneCode,
+          images: doneAssets,
+        }).catch(() => undefined);
       }
       setLoading(false);
     });
   };
+
+  const regenGdd = () => {
+    setRegenGddBusy(true);
+    setError(null);
+    void apiFetch<GddData>('/api/v1/generate-gdd', { prompt, doc_type: docType, engine })
+      .then(
+        (g) => {
+          setGddData(g);
+          addSessionSpend(estimateGdd(docType));
+        },
+        (err: unknown) =>
+          setError(
+            `Régénération GDD : ${err instanceof Error ? err.message : 'Unknown error'}`,
+          ),
+      )
+      .finally(() => setRegenGddBusy(false));
+  };
+
+  const regenCode = () => {
+    setRegenCodeBusy(true);
+    setError(null);
+    void apiFetch<CodeData>('/api/v1/generate-code', { prompt, engine })
+      .then(
+        (d) => {
+          setCodeData(d);
+          addSessionSpend(COST_CODE_USD);
+        },
+        (err: unknown) =>
+          setError(
+            `Régénération script : ${err instanceof Error ? err.message : 'Unknown error'}`,
+          ),
+      )
+      .finally(() => setRegenCodeBusy(false));
+  };
+
+  const regenAsset = (index: number) => {
+    const current = assetList[index];
+    if (!current) return;
+    const basePrompt = current.basePrompt ?? prompt;
+    const style = current.style ?? artStyle;
+    setRegenAssetBusy((p) => ({ ...p, [index]: true }));
+    void apiFetch<AssetData>('/api/v1/generate-asset', {
+      prompt: basePrompt,
+      asset_type: current.asset_type,
+      style,
+    })
+      .then(
+        (a) => {
+          setAssetList((prev) =>
+            prev.map((it, j) => (j === index ? { ...a, basePrompt, style } : it)),
+          );
+          addSessionSpend(COST_IMAGE_USD);
+        },
+        (err: unknown) =>
+          setError(
+            `Régénération visuel : ${err instanceof Error ? err.message : 'Unknown error'}`,
+          ),
+      )
+      .finally(() => setRegenAssetBusy((p) => ({ ...p, [index]: false })));
+  };
+
+  const narrate = () => {
+    if (speaking) {
+      stopSpeaking();
+      setSpeaking(false);
+      return;
+    }
+    const s = gddData?.one_sheet;
+    const text = [s?.title, s?.story_summary, ...(s?.usps ?? [])].filter(Boolean).join('. ');
+    if (!text) return;
+    if (speakText(text, 'fr-FR', () => setSpeaking(false))) {
+      setSpeaking(true);
+    } else {
+      setError('Lecture audio indisponible dans ce navigateur.');
+    }
+  };
+
+  const loadDemo = (bundle: DemoBundle) => {
+    stopSpeaking();
+    setSpeaking(false);
+    setError(null);
+    setLoading(false);
+    setGddData(bundle.gdd as unknown as GddData);
+    setCodeData(bundle.code as unknown as CodeData | null);
+    setAssetList(
+      (bundle.images ?? []).map((img) => ({
+        asset_type: img.asset_type,
+        prompt_used: img.prompt_used,
+        image_url: `/demo/${img.file}`,
+        status: img.status,
+      })),
+    );
+  };
+
+  const restoreHistory = (entry: HistoryEntry) => {
+    stopSpeaking();
+    setSpeaking(false);
+    setError(null);
+    setLoading(false);
+    setGddData(entry.gdd as unknown as GddData);
+    setCodeData(entry.code as CodeData | null);
+    setAssetList(entry.images);
+  };
+
+  const stages: ProgressStage[] = [
+    { label: 'GDD', state: gddData ? 'done' : 'active' },
+    { label: 'Script', state: codeData ? 'done' : 'active' },
+    {
+      label: `Visuels (${assetList.length}/${assetTypes.length})`,
+      state: !loading && assetList.length > 0 ? 'done' : gddData ? 'active' : 'pending',
+    },
+  ];
 
   const downloadGdd = () => {
     if (!gddData) return;
@@ -218,15 +385,28 @@ export default function Home() {
               Meta AI Pipeline
             </span>
           )}
+          <span
+            title="Estimation des coûts Meta de la session"
+            className="bg-slate-900 text-slate-400 border border-slate-700 px-3 py-1 rounded-full text-xs font-mono"
+          >
+            Session {formatCost(spend)}
+          </span>
         </div>
       </header>
+
+      <Suspense fallback={<p className="max-w-6xl mx-auto mb-8 text-xs text-slate-500">Chargement des exemples…</p>}>
+        <ExamplesRow onLoad={loadDemo} />
+      </Suspense>
 
       <section className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-8">
         {/* Formulaire de configuration */}
         <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl h-fit">
           <h2 className="text-xl font-bold mb-4 text-slate-200">1. Concept du Jeu</h2>
 
-          <label className="block text-xs text-slate-400 mb-1">Prompt de départ</label>
+          <div className="flex justify-between items-center mb-1">
+            <label className="block text-xs text-slate-400">Prompt de départ</label>
+            <DictationButton onText={(t) => setPrompt((p) => (p ? `${p} ${t}` : t))} />
+          </div>
           <textarea
             className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm mb-4 focus:outline-none focus:border-blue-500 text-slate-200"
             rows={4}
@@ -300,6 +480,12 @@ export default function Home() {
           >
             {loading ? 'Génération en cours...' : '⚡ Lancer le Pipeline IA'}
           </button>
+          <p className="mt-2 text-xs text-slate-500">
+            Coût estimé :{' '}
+            <span className="font-mono text-slate-400">
+              {formatCost(estimateRun(docType, assetTypes.length, true))}
+            </span>
+          </p>
 
           {error && (
             <p className="mt-4 text-xs text-red-400 bg-red-950/40 border border-red-500/30 rounded-lg p-3 break-words">
@@ -310,6 +496,7 @@ export default function Home() {
 
         {/* Dashboard de résultat */}
         <div className="md:col-span-2 space-y-6">
+          {loading && <GenerationProgress key={runId} stages={stages} />}
           {/* Section GDD */}
           <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl">
             <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
@@ -327,6 +514,19 @@ export default function Home() {
                     <option value="txt">Texte</option>
                     <option value="pdf">PDF</option>
                   </select>
+                  <button
+                    onClick={narrate}
+                    className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 text-xs font-semibold py-1 px-3 rounded-lg transition"
+                  >
+                    {speaking ? 'Stop' : 'Écouter'}
+                  </button>
+                  <button
+                    onClick={regenGdd}
+                    disabled={regenGddBusy || loading}
+                    className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 disabled:opacity-50 text-xs font-semibold py-1 px-3 rounded-lg transition"
+                  >
+                    {regenGddBusy ? '…' : 'Régénérer'}
+                  </button>
                   <button
                     onClick={downloadGdd}
                     className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
@@ -390,6 +590,13 @@ export default function Home() {
                     <option value="pdf">PDF</option>
                   </select>
                   <button
+                    onClick={regenCode}
+                    disabled={regenCodeBusy || loading}
+                    className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 disabled:opacity-50 text-xs font-semibold py-1 px-3 rounded-lg transition"
+                  >
+                    {regenCodeBusy ? '…' : 'Régénérer'}
+                  </button>
+                  <button
                     onClick={downloadCode}
                     className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
                   >
@@ -437,12 +644,22 @@ export default function Home() {
                   <div key={idx} className="space-y-2 border-b border-slate-800 pb-4 last:border-0 last:pb-0">
                     <div className="flex justify-between items-center">
                       <p className="text-xs font-mono text-purple-400">{a.asset_type}</p>
-                      <button
-                        onClick={() => downloadAsset(a, idx)}
-                        className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
-                      >
-                        Télécharger
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <CutoutPanel imageUrl={a.image_url} fileBase={`${a.asset_type}-${idx + 1}`} />
+                        <button
+                          onClick={() => regenAsset(idx)}
+                          disabled={regenAssetBusy[idx] || loading}
+                          className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 disabled:opacity-50 text-xs font-semibold py-1 px-3 rounded-lg transition"
+                        >
+                          {regenAssetBusy[idx] ? '…' : 'Régénérer'}
+                        </button>
+                        <button
+                          onClick={() => downloadAsset(a, idx)}
+                          className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
+                        >
+                          Télécharger
+                        </button>
+                      </div>
                     </div>
                     <p className="text-xs text-slate-400"><strong>Prompt :</strong> {a.prompt_used}</p>
                     <img src={a.image_url} alt={`Generated ${a.asset_type}`} className="w-full max-w-sm rounded-lg border border-slate-800 bg-slate-950" />
@@ -458,6 +675,10 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      <div className="max-w-6xl mx-auto mt-8">
+        <HistoryPanel page="main" onRestore={restoreHistory} />
+      </div>
       {keyOpen && <APIKeyModal onClose={() => setKeyOpen(false)} />}
     </main>
   );

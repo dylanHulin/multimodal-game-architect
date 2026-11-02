@@ -1,8 +1,25 @@
 'use client';
 
-import { useRef, useState, useSyncExternalStore, type ChangeEvent } from 'react';
+import { Suspense, useEffect, useRef, useState, useSyncExternalStore, type ChangeEvent } from 'react';
+import dynamic from 'next/dynamic';
 import APIKeyModal from './APIKeyModal';
+import CutoutPanel from './CutoutPanel';
+import DictationButton from './DictationButton';
+import GenerationProgress from './GenerationProgress';
+import HistoryPanel from './HistoryPanel';
+import { apiPost } from '../lib/api';
 import { authHeaders, getUserApiKeySet, subscribeUserApiKey } from '../lib/apiKey';
+import {
+  COST_IMAGE_USD,
+  addSessionSpend,
+  estimateRun,
+  formatCost,
+  getSpendSnapshot,
+  subscribeSpend,
+} from '../lib/cost';
+import type { DemoBundle } from '../lib/demo';
+import { pushHistory, type HistoryEntry } from '../lib/history';
+import { speakText, stopSpeaking } from '../lib/speech';
 import {
   downloadBlob,
   downloadGddPdf,
@@ -13,6 +30,9 @@ import {
   type GddFormat,
   type ImageFormat,
 } from '../lib/download';
+
+// Client-only: the manifest fetch resolves differently on server vs client.
+const ExamplesRow = dynamic(() => import('./ExamplesRow'), { ssr: false });
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000';
 
@@ -27,6 +47,13 @@ interface VisualRow {
 }
 
 interface GeneratedImage {
+  asset_type: string;
+  prompt_used: string;
+  image_url: string;
+  status: string;
+}
+
+interface AssetResp {
   asset_type: string;
   prompt_used: string;
   image_url: string;
@@ -185,6 +212,12 @@ export default function GDDForm() {
   const [imgFormat, setImgFormat] = useState<ImageFormat>('png');
   const [keyOpen, setKeyOpen] = useState(false);
   const hasKey = useSyncExternalStore(subscribeUserApiKey, getUserApiKeySet, () => false);
+  const [runId, setRunId] = useState(0);
+  const spend = useSyncExternalStore(subscribeSpend, getSpendSnapshot, () => 0);
+  const [regenImgBusy, setRegenImgBusy] = useState<Record<number, boolean>>({});
+  const [speaking, setSpeaking] = useState(false);
+
+  useEffect(() => () => stopSpeaking(), []);
 
   const set =
     (k: string) =>
@@ -204,9 +237,12 @@ export default function GDDForm() {
     setVisuals((p) => p.map((r) => (r.asset_type === asset_type ? { ...r, style } : r)));
 
   const handleSubmit = async () => {
+    stopSpeaking();
+    setSpeaking(false);
     setLoading(true);
     setError(null);
     setResult(null);
+    setRunId((n) => n + 1);
     const clean = (v?: string) => (v && v.trim() ? v.trim() : undefined);
     // Only send fields belonging to the selected doc type: values typed under
     // another type linger in state and must not leak into the request.
@@ -254,12 +290,100 @@ export default function GDDForm() {
         const text = await res.text().catch(() => '');
         throw new Error(`generate-gdd failed: ${res.status} ${res.statusText} ${text.slice(0, 300)}`);
       }
-      setResult((await res.json()) as GddResult);
+      const data = (await res.json()) as GddResult;
+      setResult(data);
+      addSessionSpend(estimateRun(docType, data.images?.length ?? 0, false));
+      const { images: _images, ...gddOnly } = data;
+      void _images;
+      await pushHistory('form', {
+        title: data.one_sheet?.title ?? 'Sans titre',
+        docType: data.document_type,
+        gdd: gddOnly,
+        code: null,
+        images: data.images ?? [],
+      }).catch(() => undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown generation error');
     } finally {
       setLoading(false);
     }
+  };
+
+  const regenImage = (index: number) => {
+    const img = result?.images?.[index];
+    if (!img || !result) return;
+    const row = visuals.find((r) => r.asset_type === img.asset_type);
+    setRegenImgBusy((p) => ({ ...p, [index]: true }));
+    void apiPost<AssetResp>('/api/v1/generate-asset', {
+      prompt: result.visual_style_prompt || 'game art',
+      asset_type: img.asset_type,
+      style: row?.style ?? 'pixel art',
+    })
+      .then(
+        (a) => {
+          setResult((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  images: (prev.images ?? []).map((it, j) =>
+                    j === index
+                      ? {
+                          asset_type: a.asset_type,
+                          prompt_used: a.prompt_used,
+                          image_url: a.image_url,
+                          status: a.status,
+                        }
+                      : it,
+                  ),
+                }
+              : prev,
+          );
+          addSessionSpend(COST_IMAGE_USD);
+        },
+        (err: unknown) =>
+          setError(`Régénération visuel : ${err instanceof Error ? err.message : 'Unknown error'}`),
+      )
+      .finally(() => setRegenImgBusy((p) => ({ ...p, [index]: false })));
+  };
+
+  const narrate = () => {
+    if (speaking) {
+      stopSpeaking();
+      setSpeaking(false);
+      return;
+    }
+    const s = result?.one_sheet;
+    const text = [s?.title, s?.story_summary, ...(s?.usps ?? [])].filter(Boolean).join('. ');
+    if (!text) return;
+    if (speakText(text, 'fr-FR', () => setSpeaking(false))) {
+      setSpeaking(true);
+    } else {
+      setError('Lecture audio indisponible dans ce navigateur.');
+    }
+  };
+
+  const loadDemo = (bundle: DemoBundle) => {
+    stopSpeaking();
+    setSpeaking(false);
+    setError(null);
+    setLoading(false);
+    setResult({
+      ...(bundle.gdd as unknown as GddResult),
+      images: (bundle.images ?? []).map((img) => ({
+        asset_type: img.asset_type,
+        prompt_used: img.prompt_used,
+        image_url: `/demo/${img.file}`,
+        status: img.status,
+      })),
+    });
+  };
+
+  const restoreHistory = (entry: HistoryEntry) => {
+    stopSpeaking();
+    setSpeaking(false);
+    setError(null);
+    setLoading(false);
+    setResult({ ...(entry.gdd as unknown as GddResult), images: entry.images });
   };
 
   const downloadGdd = () => {
@@ -291,8 +415,12 @@ export default function GDDForm() {
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-      {/* Formulaire */}
+    <>
+      <Suspense fallback={<p className="text-xs text-slate-500 mb-8">Chargement des exemples…</p>}>
+        <ExamplesRow onLoad={loadDemo} />
+      </Suspense>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        {/* Formulaire */}
       <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl h-fit space-y-4">
         <div className="flex justify-between items-center">
           <h2 className="text-xl font-bold text-slate-200">Document Rogers</h2>
@@ -358,7 +486,14 @@ export default function GDDForm() {
           </div>
         </div>
         <div>
-          <label className={labelCls}>Pitch</label>
+          <div className="flex justify-between items-center mb-1">
+            <label className="text-xs text-slate-400">Pitch</label>
+            <DictationButton
+              onText={(t) =>
+                setFields((p) => ({ ...p, pitch: p.pitch ? `${p.pitch} ${t}` : t }))
+              }
+            />
+          </div>
           <input className={inputCls} value={fields.pitch ?? ''} onChange={set('pitch')} />
         </div>
         <div>
@@ -523,6 +658,19 @@ export default function GDDForm() {
         >
           {loading ? 'Génération en cours...' : 'Générer le GDD'}
         </button>
+        <p className="text-xs text-slate-500">
+          Coût estimé :{' '}
+          <span className="font-mono text-slate-400">
+            {formatCost(
+              estimateRun(
+                docType,
+                visuals.filter((r) => r.enabled).reduce((n, r) => n + r.count, 0),
+                false,
+              ),
+            )}
+          </span>{' '}
+          · Session <span className="font-mono text-slate-400">{formatCost(spend)}</span>
+        </p>
 
         {error && (
           <p className="text-xs text-red-400 bg-red-950/40 border border-red-500/30 rounded-lg p-3 break-words whitespace-pre-line">
@@ -533,6 +681,12 @@ export default function GDDForm() {
 
       {/* Résultat */}
       <div className="space-y-6">
+        {loading && (
+          <GenerationProgress
+            key={runId}
+            stages={[{ label: 'Document + visuels', state: 'active' }]}
+          />
+        )}
         <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl">
           <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
             <h2 className="text-lg font-bold text-blue-400">Document généré</h2>
@@ -549,6 +703,19 @@ export default function GDDForm() {
                   <option value="txt">Texte</option>
                   <option value="pdf">PDF</option>
                 </select>
+                <button
+                  onClick={narrate}
+                  className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 text-xs font-semibold py-1 px-3 rounded-lg transition"
+                >
+                  {speaking ? 'Stop' : 'Écouter'}
+                </button>
+                <button
+                  onClick={() => void handleSubmit()}
+                  disabled={loading}
+                  className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 disabled:opacity-50 text-xs font-semibold py-1 px-3 rounded-lg transition"
+                >
+                  Régénérer
+                </button>
                 <button
                   onClick={downloadGdd}
                   className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
@@ -621,12 +788,22 @@ export default function GDDForm() {
                 <div key={i} className="space-y-1">
                   <div className="flex justify-between items-center">
                     <p className="text-xs font-mono text-purple-400">{img.asset_type}</p>
-                    <button
-                      onClick={() => downloadImg(img, i)}
-                      className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
-                    >
-                      Télécharger
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <CutoutPanel imageUrl={img.image_url} fileBase={`${img.asset_type}-${i + 1}`} />
+                      <button
+                        onClick={() => regenImage(i)}
+                        disabled={regenImgBusy[i] || loading}
+                        className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 disabled:opacity-50 text-xs font-semibold py-1 px-3 rounded-lg transition"
+                      >
+                        {regenImgBusy[i] ? '…' : 'Régénérer'}
+                      </button>
+                      <button
+                        onClick={() => downloadImg(img, i)}
+                        className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
+                      >
+                        Télécharger
+                      </button>
+                    </div>
                   </div>
                   <img
                     src={img.image_url}
@@ -644,6 +821,10 @@ export default function GDDForm() {
         </div>
       </div>
       {keyOpen && <APIKeyModal onClose={() => setKeyOpen(false)} />}
-    </div>
+      </div>
+      <div className="mt-8">
+        <HistoryPanel page="form" onRestore={restoreHistory} />
+      </div>
+    </>
   );
 }

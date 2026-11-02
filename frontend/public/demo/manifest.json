@@ -1,0 +1,20 @@
+[
+  {
+    "id": "ex1",
+    "title": "BRUME ÉTERNELLE : Le Dernier Gardien de Sainte-Rowan",
+    "genre": "Survie / Horreur",
+    "docType": "one_sheet",
+    "engine": "Godot 4",
+    "file": "ex1.json",
+    "thumb": "/demo/ex1-0.webp"
+  },
+  {
+    "id": "ex2",
+    "title": "Starfall Odyssey",
+    "genre": "Space-opera",
+    "docType": "ten_pager",
+    "engine": "Unity",
+    "file": "ex2.json",
+    "thumb": "/demo/ex2-0.webp"
+  }
+]

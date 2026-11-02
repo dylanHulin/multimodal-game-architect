@@ -483,6 +483,209 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(body["ten_pager"]["camera"], "top_down")
         self.assertIsNone(body.get("full_gdd"))
 
+    def _sam_fixture_text(self):
+        import os
+
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "fixtures", "sam-record.txt")) as f:
+            return f.read()
+
+    def _sam_success_lines(self, text):
+        import json
+
+        head = {"output_index": 0, "content_index": 0, "item_id": "msg_test"}
+        return [
+            "data: "
+            + json.dumps({"type": "response.output_text.delta", "delta": text, **head}),
+            "data: "
+            + json.dumps({"type": "response.output_text.done", "text": text, **head}),
+            "data: " + json.dumps({"type": "response.completed"}),
+        ]
+
+    def test_records_from_events_decodes_real_mask(self):
+        # Golden fixture: a real captured sam-3.1 record. Decoded through
+        # Meta's official parser: 507x1024 raster with substantial foreground.
+        import asyncio
+        import json
+        from app.agents.sam_agent import records_from_events
+
+        text = self._sam_fixture_text()
+        events = [
+            json.loads(line.removeprefix("data: ")) for line in self._sam_success_lines(text)
+        ]
+        records = asyncio.run(records_from_events(events))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["box"], {"x1": 201, "y1": 415, "x2": 944, "y2": 1915})
+        self.assertEqual((records[0]["mask_w"], records[0]["mask_h"]), (507, 1024))
+        self.assertEqual(len(records[0]["mask_bytes"]), 507 * 1024)
+        self.assertGreater(sum(records[0]["mask_bytes"]), 100000)
+
+    def _fake_stream_client(self, lines, status_code=200):
+        from unittest.mock import AsyncMock, MagicMock
+
+        class _Resp:
+            def __init__(self):
+                self.status_code = status_code
+                self.headers = {"content-type": "text/event-stream"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def aiter_lines(self):
+                async def gen():
+                    for line in lines:
+                        yield line
+
+                return gen()
+
+            async def aread(self):
+                return b"{}"
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.stream = MagicMock(return_value=_Resp())
+        return client
+
+    def test_cutout_success_record(self):
+        import base64
+        import httpx
+        import app.main as main_module
+        from app.agents.sam_agent import SamAgent
+        from unittest.mock import MagicMock, patch
+
+        lines = self._sam_success_lines(self._sam_fixture_text())
+        client = self._fake_stream_client(lines)
+        old = main_module.sam_agent
+        main_module.sam_agent = SamAgent(api_key="dummy-test-key")
+        try:
+            with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+                resp = self.client.post(
+                    "/api/v1/cutout",
+                    json={"image_url": "data:image/png;base64,AAAA", "concept": "slime"},
+                )
+        finally:
+            main_module.sam_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "success")
+        self.assertEqual(body["concept"], "slime")
+        self.assertEqual(len(body["masks"]), 1)
+        self.assertEqual((body["masks"][0]["width"], body["masks"][0]["height"]), (507, 1024))
+        self.assertEqual(len(base64.b64decode(body["masks"][0]["data_base64"])), 507 * 1024)
+
+    def test_cutout_missing_parser_dep_is_explicit_error(self):
+        # The official parser may be absent from a runtime env: the route must
+        # answer an explicit error, never crash the import.
+        import asyncio
+        import app.agents.sam_agent as sam_module
+        from app.agents.sam_agent import SamAgent
+        from unittest.mock import patch
+
+        with patch.object(sam_module, "meta_sam_parser", None):
+            body = asyncio.run(SamAgent(api_key="dummy").cutout_masks("data:,", "x"))
+        self.assertEqual(body.status, "error")
+        self.assertIn("meta-sam-parser", body.error or "")
+
+    def test_cutout_no_match_on_empty_stream(self):
+        import httpx
+        import app.main as main_module
+        from app.agents.sam_agent import SamAgent
+        from unittest.mock import MagicMock, patch
+
+        lines = self._sam_success_lines("")
+        client = self._fake_stream_client(lines)
+        old = main_module.sam_agent
+        main_module.sam_agent = SamAgent(api_key="dummy-test-key")
+        try:
+            with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+                resp = self.client.post(
+                    "/api/v1/cutout",
+                    json={"image_url": "data:image/png;base64,AAAA", "concept": "dragon"},
+                )
+        finally:
+            main_module.sam_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()["status"], "no_match")
+
+    def test_transcribe_success(self):
+        import base64
+        import httpx
+        import json
+        import app.main as main_module
+        from app.agents.voice_agent import VoiceAgent
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        seen = {}
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.json = MagicMock(
+            return_value={
+                "transcript": "un zombie",
+                "audioDurationMs": 1200,
+                "turns": [
+                    {
+                        "turnId": 1,
+                        "startMs": 0,
+                        "endMs": 1200,
+                        "transcript": "un zombie",
+                        "speaker": "A",
+                    }
+                ],
+            }
+        )
+        resp_200.raise_for_status = MagicMock()
+
+        async def fake_post(url, headers=None, **kwargs):
+            seen["url"] = url
+            seen["headers"] = headers
+            seen["kwargs"] = kwargs
+            return resp_200
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.post = fake_post
+
+        wav = b"RIFF" + (36).to_bytes(4, "little") + b"WAVE" + bytes(32)
+        old = main_module.voice_agent
+        main_module.voice_agent = VoiceAgent(api_key="dummy-test-key")
+        try:
+            with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+                resp = self.client.post(
+                    "/api/v1/transcribe",
+                    json={"audio_base64": base64.b64encode(wav).decode("ascii")},
+                )
+        finally:
+            main_module.voice_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "success")
+        self.assertEqual(body["transcript"], "un zombie")
+        self.assertEqual(len(body["turns"]), 1)
+        self.assertIn("/asr/transcribe", seen["url"])
+        sent_files = seen["kwargs"]["files"]
+        self.assertEqual(sent_files["audio"][1], wav)
+        sent_request = json.loads(seen["kwargs"]["data"]["request"])
+        self.assertEqual(sent_request["model"], "muse-voice-transcribe-1.0")
+        self.assertEqual(sent_request["audioEncoding"], "WAV")
+
+    def test_transcribe_rejects_bad_audio(self):
+        r1 = self.client.post("/api/v1/transcribe", json={"audio_base64": "!!!"})
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r1.json()["status"], "error")
+        import base64
+
+        r2 = self.client.post(
+            "/api/v1/transcribe",
+            json={"audio_base64": base64.b64encode(b"not a wav file" * 4).decode("ascii")},
+        )
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r2.json()["status"], "error")
+
     def test_generate_gdd_forwards_user_key_to_agent(self):
         # The GDD route must construct its agent with the user key.
         import app.routers.gdd_router as router_module
