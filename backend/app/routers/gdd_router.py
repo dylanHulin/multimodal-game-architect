@@ -12,11 +12,12 @@ import re
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException  # type: ignore
+from fastapi import APIRouter, Depends, HTTPException  # type: ignore
 from pydantic import BaseModel, Field  # type: ignore
 
 from app.agents.asset_agent import AssetAgent
 from app.agents.gdd_agent import GDDAgent, GDDType, GameDesignDocumentResponse
+from app.auth import user_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -166,9 +167,11 @@ def _parse_visual_list(raw: str, count: int) -> List[str]:
     return items[:count]
 
 
-async def _llm_visual_prompts(theme: str, asset_type: str, count: int) -> List[str]:
+async def _llm_visual_prompts(
+    theme: str, asset_type: str, count: int, api_key: Optional[str] = None
+) -> List[str]:
     """Real Meta call returning distinct sub-prompts. Raises on any failure."""
-    agent = GDDAgent()
+    agent = GDDAgent(api_key=api_key)
     if not agent.api_key:
         raise RuntimeError("META_LLAMA_API_KEY missing.")
     label = asset_type.replace("_", " ")
@@ -185,7 +188,9 @@ async def _llm_visual_prompts(theme: str, asset_type: str, count: int) -> List[s
     return prompts
 
 
-async def generate_visual_prompts(theme: str, asset_type: str, count: int) -> List[str]:
+async def generate_visual_prompts(
+    theme: str, asset_type: str, count: int, api_key: Optional[str] = None
+) -> List[str]:
     """Return `count` DISTINCT sub-prompts for one asset type.
 
     Real LLM call with deterministic mock fallback. Never raises: always
@@ -194,7 +199,7 @@ async def generate_visual_prompts(theme: str, asset_type: str, count: int) -> Li
     count = max(1, min(5, count))
     if not MOCK_VISUALS:
         try:
-            prompts = await _llm_visual_prompts(theme, asset_type, count)
+            prompts = await _llm_visual_prompts(theme, asset_type, count, api_key)
             if len(prompts) >= count:
                 return prompts[:count]
             prompts += _mock_visual_prompts(theme, asset_type, count - len(prompts), start=len(prompts))
@@ -208,7 +213,9 @@ gdd_agent = GDDAgent()
 asset_agent = AssetAgent()
 
 
-async def _render_one(cfg: VisualAssetConfig, sub_prompt: str, index: int) -> GeneratedImage:
+async def _render_one(
+    cfg: VisualAssetConfig, sub_prompt: str, index: int, api_key: Optional[str] = None
+) -> GeneratedImage:
     if MOCK_VISUALS:
         slug = f"{cfg.asset_type}-{index + 1}"
         return GeneratedImage(
@@ -217,7 +224,8 @@ async def _render_one(cfg: VisualAssetConfig, sub_prompt: str, index: int) -> Ge
             image_url=f"https://placehold.co/600x400/png?text={slug}",
             status="mock",
         )
-    res = await asset_agent.generate_asset(
+    agent = asset_agent if api_key is None else AssetAgent(api_key=api_key)
+    res = await agent.generate_asset(
         prompt=sub_prompt, asset_type=cfg.asset_type, style=cfg.style or "pixel art"
     )
     return GeneratedImage(
@@ -228,24 +236,30 @@ async def _render_one(cfg: VisualAssetConfig, sub_prompt: str, index: int) -> Ge
     )
 
 
-def _user_facts_block(request: GDDRequest) -> str:
+def _user_facts_block(request: GDDRequest, doc: GDDType) -> str:
     pairs = [
         ("Title", request.title),
         ("Platform", request.platform),
         ("Target audience", request.audience),
         ("Pitch", request.pitch),
         ("USP", request.usp),
-        ("Camera", request.camera.value if request.camera else None),
-        ("Character", request.character),
-        ("Controls", request.controls),
-        ("Core loop", request.core_loop),
-        ("Menu flow", request.menu_flow),
-        ("Lore", request.lore),
-        ("Level design", request.level_design),
-        ("Features", ", ".join(request.features) if request.features else None),
-        ("AI type", request.ai_type.value if request.ai_type else None),
-        ("Physics engine", request.physics_engine.value if request.physics_engine else None),
     ]
+    if doc in (GDDType.TEN_PAGER, GDDType.FULL_GDD):
+        pairs += [
+            ("Camera", request.camera.value if request.camera else None),
+            ("Character", request.character),
+            ("Controls", request.controls),
+            ("Core loop", request.core_loop),
+            ("Menu flow", request.menu_flow),
+        ]
+    if doc is GDDType.FULL_GDD:
+        pairs += [
+            ("Lore", request.lore),
+            ("Level design", request.level_design),
+            ("Features", ", ".join(request.features) if request.features else None),
+            ("AI type", request.ai_type.value if request.ai_type else None),
+            ("Physics engine", request.physics_engine.value if request.physics_engine else None),
+        ]
     lines = [f"- {label}: {value.strip()}" for label, value in pairs if value and str(value).strip()]
     if not lines:
         return ""
@@ -255,7 +269,9 @@ def _user_facts_block(request: GDDRequest) -> str:
 
 
 @router.post("/generate-gdd", response_model=GDDGenerateResponse)
-async def generate_gdd(request: GDDRequest):
+async def generate_gdd(
+    request: GDDRequest, user_key: Optional[str] = Depends(user_api_key)
+):
     effective = (request.prompt or "").strip()
     if not effective:
         seeds = [s.strip() for s in [request.title, request.pitch] if s and s.strip()]
@@ -263,12 +279,17 @@ async def generate_gdd(request: GDDRequest):
     if not effective:
         raise HTTPException(status_code=400, detail="Le prompt ne peut pas être vide.")
 
-    base = await gdd_agent.generate_document(
+    gdd = gdd_agent
+    if user_key is not None:
+        logger.info("generate-gdd: using user-provided API key.")
+        gdd = GDDAgent(api_key=user_key)
+    doc = request.doc_type or GDDType.ONE_SHEET
+    base = await gdd.generate_document(
         prompt=effective,
-        doc_type=request.doc_type or GDDType.ONE_SHEET,
+        doc_type=doc,
         genre=request.genre or "Survie 2D",
         engine=request.engine or "Godot 4",
-        extra_context=_user_facts_block(request),
+        extra_context=_user_facts_block(request, doc),
     )
 
     # Hard overrides: user-provided one-sheet facts win over generated text.
@@ -285,6 +306,8 @@ async def generate_gdd(request: GDDRequest):
         sheet_updates["usps"] = [request.usp.strip()]
     one_sheet = base.one_sheet.model_copy(update=sheet_updates) if sheet_updates else base.one_sheet
 
+    # Sections are gated on doc_type: stale fields from a previous form type
+    # must not leak into the response (nor into downloads).
     ten_pager = (
         TenPagerSection(
             camera=request.camera,
@@ -293,7 +316,8 @@ async def generate_gdd(request: GDDRequest):
             core_loop=request.core_loop,
             menu_flow=request.menu_flow,
         )
-        if any([request.camera, request.character, request.controls, request.core_loop, request.menu_flow])
+        if doc in (GDDType.TEN_PAGER, GDDType.FULL_GDD)
+        and any([request.camera, request.character, request.controls, request.core_loop, request.menu_flow])
         else None
     )
     full_gdd = (
@@ -304,7 +328,8 @@ async def generate_gdd(request: GDDRequest):
             ai_type=request.ai_type,
             physics_engine=request.physics_engine,
         )
-        if any(
+        if doc is GDDType.FULL_GDD
+        and any(
             [request.lore, request.level_design, request.features, request.ai_type, request.physics_engine]
         )
         else None
@@ -315,10 +340,10 @@ async def generate_gdd(request: GDDRequest):
     if enabled:
         theme = base.visual_style_prompt or effective
         sublists = await asyncio.gather(
-            *[generate_visual_prompts(theme, c.asset_type, c.count) for c in enabled]
+            *[generate_visual_prompts(theme, c.asset_type, c.count, user_key) for c in enabled]
         )
         renders = [
-            _render_one(cfg, sub, i)
+            _render_one(cfg, sub, i, user_key)
             for cfg, subs in zip(enabled, sublists)
             for i, sub in enumerate(subs)
         ]

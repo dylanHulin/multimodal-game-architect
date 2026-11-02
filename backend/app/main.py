@@ -7,14 +7,19 @@ from dotenv import load_dotenv  # type: ignore
 # read their keys at construction time.
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
-from fastapi import FastAPI, HTTPException  # type: ignore
+import logging
+
+from fastapi import Depends, FastAPI, HTTPException  # type: ignore
 from fastapi.middleware.cors import CORSMiddleware  # type: ignore
 from pydantic import BaseModel  # type: ignore
 from typing import Optional
 
 from app.agents.code_agent import CodeGenAgent, CodeGenerationResponse  # type: ignore
 from app.agents.asset_agent import AssetAgent, AssetGenerationResponse  # type: ignore
+from app.auth import user_api_key  # type: ignore
 from app.routers.gdd_router import router as gdd_router
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="MultiModal GameArchitect API",
@@ -57,21 +62,33 @@ def read_root():
     }
 
 @app.post("/api/v1/generate-code", response_model=CodeGenerationResponse)
-async def generate_code(request: CodeGenerationRequest):
+async def generate_code(
+    request: CodeGenerationRequest, user_key: Optional[str] = Depends(user_api_key)
+):
     if not request.prompt:
         raise HTTPException(status_code=400, detail="Le prompt ne peut pas être vide.")
 
-    return await code_agent.generate_script(
+    agent = code_agent
+    if user_key is not None:
+        logger.info("generate-code: using user-provided API key.")
+        agent = CodeGenAgent(api_key=user_key)
+    return await agent.generate_script(
         prompt=request.prompt,
         engine=request.engine or "Godot 4"
     )
 
 @app.post("/api/v1/generate-asset", response_model=AssetGenerationResponse)
-async def generate_asset(request: AssetGenerationRequest):
+async def generate_asset(
+    request: AssetGenerationRequest, user_key: Optional[str] = Depends(user_api_key)
+):
     if not request.prompt:
         raise HTTPException(status_code=400, detail="Le prompt ne peut pas être vide.")
 
-    return await asset_agent.generate_asset(
+    agent = asset_agent
+    if user_key is not None:
+        logger.info("generate-asset: using user-provided API key.")
+        agent = AssetAgent(api_key=user_key)
+    return await agent.generate_asset(
         prompt=request.prompt,
         asset_type=request.asset_type or "sprite",
         style=request.style or "pixel art",

@@ -1,7 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
+import APIKeyModal from '../components/APIKeyModal';
+import { authHeaders, getUserApiKeySet, subscribeUserApiKey } from '../lib/apiKey';
 import {
   downloadBlob,
   downloadCodePdf,
@@ -55,7 +57,7 @@ interface AssetData {
 async function apiFetch<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -80,6 +82,8 @@ export default function Home() {
   const [gddFormat, setGddFormat] = useState<GddFormat>('md');
   const [codeFormat, setCodeFormat] = useState<CodeFormat>('source');
   const [imgFormat, setImgFormat] = useState<ImageFormat>('png');
+  const [keyOpen, setKeyOpen] = useState(false);
+  const hasKey = useSyncExternalStore(subscribeUserApiKey, getUserApiKeySet, () => false);
 
   const handleGenerate = () => {
     setLoading(true);
@@ -199,9 +203,21 @@ export default function Home() {
           >
             Document Rogers →
           </Link>
-          <span className="bg-blue-900/40 text-blue-400 border border-blue-500/30 px-3 py-1 rounded-full text-xs font-semibold">
-            Meta AI Pipeline
-          </span>
+          <button
+            onClick={() => setKeyOpen(true)}
+            className="bg-slate-900 text-slate-200 border border-slate-700 hover:border-blue-500 px-3 py-1 rounded-full text-xs font-semibold transition"
+          >
+            Clé API
+          </button>
+          {hasKey ? (
+            <span className="bg-emerald-900/40 text-emerald-400 border border-emerald-500/30 px-3 py-1 rounded-full text-xs font-semibold">
+              Clé perso
+            </span>
+          ) : (
+            <span className="bg-blue-900/40 text-blue-400 border border-blue-500/30 px-3 py-1 rounded-full text-xs font-semibold">
+              Meta AI Pipeline
+            </span>
+          )}
         </div>
       </header>
 
@@ -442,6 +458,7 @@ export default function Home() {
           </div>
         </div>
       </section>
+      {keyOpen && <APIKeyModal onClose={() => setKeyOpen(false)} />}
     </main>
   );
 }

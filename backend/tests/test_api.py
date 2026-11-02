@@ -341,6 +341,169 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(body["file_name"], "PlayerCharacter.h")
         self.assertIn("ACharacter", body["code_content"])
 
+    def test_user_bearer_key_reaches_meta_for_code(self):
+        # BYOK: the user Bearer token (not the server key) must land in the
+        # Authorization header of the Meta call. Env keys are empty here.
+        import httpx
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        seen = {}
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.json = MagicMock(
+            return_value={
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "extends CharacterBody2D"}],
+                    }
+                ],
+            }
+        )
+        resp_200.raise_for_status = MagicMock()
+
+        async def fake_post(url, headers=None, json=None, **kwargs):
+            seen.update(headers or {})
+            return resp_200
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.post = fake_post
+
+        with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+            resp = self.client.post(
+                "/api/v1/generate-code",
+                json={"prompt": "x", "engine": "Godot 4"},
+                headers={"Authorization": "Bearer user-key-abc-123"},
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(seen.get("Authorization"), "Bearer user-key-abc-123")
+
+    def test_user_bearer_key_reaches_meta_for_asset(self):
+        # Same forwarding guarantee on the image route.
+        import httpx
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        seen = {}
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.json = MagicMock(
+            return_value={
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "image_generation_call",
+                        "status": "completed",
+                        "result": "UklGR" + "A" * 203,
+                    }
+                ],
+            }
+        )
+        resp_200.raise_for_status = MagicMock()
+
+        async def fake_post(url, headers=None, json=None, **kwargs):
+            seen.update(headers or {})
+            return resp_200
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.post = fake_post
+
+        with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+            resp = self.client.post(
+                "/api/v1/generate-asset",
+                json={"prompt": "slime", "asset_type": "sprite"},
+                headers={"Authorization": "Bearer user-key-abc-123"},
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(seen.get("Authorization"), "Bearer user-key-abc-123")
+
+    def test_short_or_missing_bearer_falls_back_without_401(self):
+        # Optional BYOK: no 401 ever; short/absent tokens use server keys
+        # (mock paths here since env keys are empty in tests).
+        r1 = self.client.post(
+            "/api/v1/generate-code", json={"prompt": "x", "engine": "Godot 4"}
+        )
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r1.json()["status"], "mock")
+        r2 = self.client.post(
+            "/api/v1/generate-code",
+            json={"prompt": "x", "engine": "Godot 4"},
+            headers={"Authorization": "Bearer abc"},
+        )
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertEqual(r2.json()["status"], "mock")
+
+    def test_generate_gdd_one_sheet_ignores_stale_rich_fields(self):
+        # Bug: ten_pager/full_gdd sections were echoed from stale request
+        # fields even for doc_type=one_sheet, so downloads contained all types.
+        resp = self.client.post(
+            "/api/v1/generate-gdd",
+            json={
+                "doc_type": "one_sheet",
+                "title": "T",
+                "pitch": "P",
+                "camera": "top_down",
+                "character": "H",
+                "controls": "W",
+                "core_loop": "L",
+                "menu_flow": "M",
+                "lore": "stale",
+                "level_design": "stale",
+                "features": ["multiplayer"],
+                "ai_type": "goap",
+                "physics_engine": "box2d",
+            },
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertIsNone(body.get("ten_pager"))
+        self.assertIsNone(body.get("full_gdd"))
+        self.assertIsNone(body.get("beat_chart"))
+
+    def test_generate_gdd_ten_pager_ignores_stale_full_fields(self):
+        resp = self.client.post(
+            "/api/v1/generate-gdd",
+            json={
+                "doc_type": "ten_pager",
+                "title": "T",
+                "pitch": "P",
+                "camera": "top_down",
+                "core_loop": "L",
+                "lore": "stale",
+                "features": ["multiplayer"],
+            },
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertIsNotNone(body.get("ten_pager"))
+        self.assertEqual(body["ten_pager"]["camera"], "top_down")
+        self.assertIsNone(body.get("full_gdd"))
+
+    def test_generate_gdd_forwards_user_key_to_agent(self):
+        # The GDD route must construct its agent with the user key.
+        import app.routers.gdd_router as router_module
+        from unittest.mock import patch
+
+        real = router_module.GDDAgent
+        seen = {}
+
+        def spy(api_key=None):
+            seen["api_key"] = api_key
+            return real(api_key=api_key)
+
+        with patch.object(router_module, "GDDAgent", side_effect=spy):
+            resp = self.client.post(
+                "/api/v1/generate-gdd",
+                json={"prompt": "z", "doc_type": "one_sheet"},
+                headers={"Authorization": "Bearer user-key-xyz-789"},
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(seen.get("api_key"), "user-key-xyz-789")
+
 
 if __name__ == "__main__":
     unittest.main()

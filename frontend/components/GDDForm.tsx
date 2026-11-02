@@ -1,6 +1,8 @@
 'use client';
 
-import { useRef, useState, type ChangeEvent } from 'react';
+import { useRef, useState, useSyncExternalStore, type ChangeEvent } from 'react';
+import APIKeyModal from './APIKeyModal';
+import { authHeaders, getUserApiKeySet, subscribeUserApiKey } from '../lib/apiKey';
 import {
   downloadBlob,
   downloadGddPdf,
@@ -181,6 +183,8 @@ export default function GDDForm() {
   const [result, setResult] = useState<GddResult | null>(null);
   const [gddFormat, setGddFormat] = useState<GddFormat>('md');
   const [imgFormat, setImgFormat] = useState<ImageFormat>('png');
+  const [keyOpen, setKeyOpen] = useState(false);
+  const hasKey = useSyncExternalStore(subscribeUserApiKey, getUserApiKeySet, () => false);
 
   const set =
     (k: string) =>
@@ -204,6 +208,8 @@ export default function GDDForm() {
     setError(null);
     setResult(null);
     const clean = (v?: string) => (v && v.trim() ? v.trim() : undefined);
+    // Only send fields belonging to the selected doc type: values typed under
+    // another type linger in state and must not leak into the request.
     const payload = {
       doc_type: docType,
       genre: fields.genre || undefined,
@@ -213,16 +219,24 @@ export default function GDDForm() {
       audience: clean(fields.audience),
       pitch: clean(fields.pitch),
       usp: clean(fields.usp),
-      camera: clean(fields.camera),
-      character: clean(fields.character),
-      controls: clean(fields.controls),
-      core_loop: clean(fields.core_loop),
-      menu_flow: clean(fields.menu_flow),
-      lore: clean(fields.lore),
-      level_design: clean(fields.level_design),
-      features,
-      ai_type: clean(fields.ai_type),
-      physics_engine: clean(fields.physics_engine),
+      ...(docType !== 'one_sheet'
+        ? {
+            camera: clean(fields.camera),
+            character: clean(fields.character),
+            controls: clean(fields.controls),
+            core_loop: clean(fields.core_loop),
+            menu_flow: clean(fields.menu_flow),
+          }
+        : {}),
+      ...(docType === 'full_gdd'
+        ? {
+            lore: clean(fields.lore),
+            level_design: clean(fields.level_design),
+            features,
+            ai_type: clean(fields.ai_type),
+            physics_engine: clean(fields.physics_engine),
+          }
+        : {}),
       visuals: visuals.map((v) => ({
         asset_type: v.asset_type,
         enabled: v.enabled,
@@ -233,7 +247,7 @@ export default function GDDForm() {
     try {
       const res = await fetch(`${API_URL}/api/v1/generate-gdd`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
@@ -280,7 +294,18 @@ export default function GDDForm() {
     <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
       {/* Formulaire */}
       <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl h-fit space-y-4">
-        <h2 className="text-xl font-bold text-slate-200">Document Rogers</h2>
+        <div className="flex justify-between items-center">
+          <h2 className="text-xl font-bold text-slate-200">Document Rogers</h2>
+          <div className="flex items-center gap-2">
+            {hasKey && <span className="text-xs text-emerald-400">Clé perso active</span>}
+            <button
+              onClick={() => setKeyOpen(true)}
+              className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 px-2 py-1 rounded-lg text-xs font-semibold transition"
+            >
+              Clé API
+            </button>
+          </div>
+        </div>
 
         <div>
           <label className={labelCls}>Type de GDD</label>
@@ -618,6 +643,7 @@ export default function GDDForm() {
           )}
         </div>
       </div>
+      {keyOpen && <APIKeyModal onClose={() => setKeyOpen(false)} />}
     </div>
   );
 }
