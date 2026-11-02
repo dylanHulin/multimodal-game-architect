@@ -1,4 +1,4 @@
-"""GDD generation router: Rogers-based dynamic forms + visual prompt variance.
+"""GDD generation router: dynamic forms + visual prompt variance.
 
 POST /api/v1/generate-gdd accepts both the legacy minimal payload
 ({prompt, doc_type, engine}) and the rich GDDForm payload (one-sheet /
@@ -6,18 +6,23 @@ ten-pager / full-gdd fields + visual configs). Mounted from app.main.
 """
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import re
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+import httpx  # type: ignore
 from fastapi import APIRouter, Depends, HTTPException  # type: ignore
 from pydantic import BaseModel, Field  # type: ignore
 
 from app.agents.asset_agent import AssetAgent
 from app.agents.gdd_agent import GDDAgent, GDDType, GameDesignDocumentResponse
+from app.agents.review_agent import GDDFixResponse, GDDReviewResponse, ReviewAgent, Suggestion
 from app.auth import user_api_key
+from app.services.pdf_layout import render_gdd_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +66,7 @@ class VisualAssetConfig(BaseModel):
 
 
 class GDDRequest(BaseModel):
-    """Union payload: legacy minimal fields + rich Rogers-form fields (all optional)."""
+    """Union payload: legacy minimal fields + rich builder-form fields (all optional)."""
 
     prompt: Optional[str] = Field(
         None, description="Legacy free-text prompt; or omit and use title/pitch."
@@ -209,8 +214,32 @@ async def generate_visual_prompts(
     return _mock_visual_prompts(theme, asset_type, count)
 
 
+class ReviewRequest(BaseModel):
+    """Audit a GDD (generated JSON or pasted text) against its design checklist."""
+
+    doc_type: Optional[GDDType] = GDDType.ONE_SHEET
+    document: str = Field(..., description="GDD JSON (stringified) or raw pasted text.")
+
+
+class FixSuggestion(BaseModel):
+    id: str
+    section: str = ""
+    issue: str = ""
+    proposal: str = ""
+
+
+class FixRequest(BaseModel):
+    """Apply user-confirmed suggestions; apply_ids must reference suggestions."""
+
+    doc_type: Optional[GDDType] = GDDType.ONE_SHEET
+    document: str = Field(..., description="Original GDD JSON (stringified) or raw text.")
+    suggestions: List[FixSuggestion] = []
+    apply_ids: List[str] = Field(..., description="Suggestion ids approved by the user.")
+
+
 gdd_agent = GDDAgent()
 asset_agent = AssetAgent()
+review_agent = ReviewAgent()
 
 
 async def _render_one(
@@ -358,4 +387,95 @@ async def generate_gdd(
         ten_pager=ten_pager,
         full_gdd=full_gdd,
         images=images,
+    )
+
+
+@router.post("/review-gdd", response_model=GDDReviewResponse)
+async def review_gdd(request: ReviewRequest, user_key: Optional[str] = Depends(user_api_key)):
+    if not (request.document or "").strip():
+        raise HTTPException(status_code=400, detail="Le document à auditer ne peut pas être vide.")
+    agent = review_agent
+    if user_key is not None:
+        logger.info("review-gdd: using user-provided API key.")
+        agent = ReviewAgent(api_key=user_key)
+    return await agent.review_document(
+        doc_type=request.doc_type or GDDType.ONE_SHEET,
+        document=request.document,
+    )
+
+
+@router.post("/fix-gdd", response_model=GDDFixResponse)
+async def fix_gdd(request: FixRequest, user_key: Optional[str] = Depends(user_api_key)):
+    if not (request.document or "").strip():
+        raise HTTPException(status_code=400, detail="Le document à auditer ne peut pas être vide.")
+    if not request.apply_ids:
+        raise HTTPException(status_code=400, detail="Sélectionnez au moins une suggestion.")
+    agent = review_agent
+    if user_key is not None:
+        logger.info("fix-gdd: using user-provided API key.")
+        agent = ReviewAgent(api_key=user_key)
+    return await agent.apply_fixes(
+        doc_type=request.doc_type or GDDType.ONE_SHEET,
+        document=request.document,
+        suggestions=[
+            Suggestion(id=s.id, section=s.section, issue=s.issue, proposal=s.proposal)
+            for s in request.suggestions
+        ],
+        apply_ids=request.apply_ids,
+    )
+
+
+class StyledPdfRequest(BaseModel):
+    """Styled PDF export: gdd + theme ('pro' or 'gamebook') + optional images."""
+
+    gdd: Dict[str, Any]
+    style: str = "pro"
+    images: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class StyledPdfResponse(BaseModel):
+    status: str  # success | error
+    pdf_base64: str = ""
+    error: Optional[str] = None
+
+
+async def _fetch_cover(images: List[Dict[str, Any]]) -> Optional[bytes]:
+    """First usable image bytes for the PDF cover. Best-effort, never raises."""
+    for img in images:
+        if not isinstance(img, dict):
+            continue
+        url = str(img.get("image_url") or "")
+        if url.startswith("data:image/") and ";base64," in url:
+            try:
+                raw = base64.b64decode(url.split(";base64,", 1)[1], validate=True)
+            except (binascii.Error, ValueError):
+                continue
+            return raw if 0 < len(raw) <= 6 * 1024 * 1024 else None
+        if url.startswith(("http://", "https://")):
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(url, follow_redirects=True)
+                    resp.raise_for_status()
+                    raw = bytes(resp.content)
+            except Exception:
+                continue
+            ctype = resp.headers.get("content-type", "")
+            if "image" not in ctype or not (0 < len(raw) <= 3 * 1024 * 1024):
+                continue
+            return raw
+    return None
+
+
+@router.post("/gdd-pdf", response_model=StyledPdfResponse)
+async def gdd_pdf(request: StyledPdfRequest):
+    if request.style not in ("pro", "gamebook"):
+        raise HTTPException(status_code=400, detail="Style PDF inconnu (pro ou gamebook).")
+    if not request.gdd:
+        raise HTTPException(status_code=400, detail="Le document PDF ne peut pas être vide.")
+    cover = await _fetch_cover(request.images)
+    pdf, err = render_gdd_pdf(request.gdd, request.style, cover)
+    if err is not None or pdf is None:
+        return StyledPdfResponse(status="error", error=err or "Génération PDF impossible.")
+    return StyledPdfResponse(
+        status="success", pdf_base64=base64.b64encode(pdf).decode("ascii")
     )

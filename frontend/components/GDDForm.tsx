@@ -24,11 +24,13 @@ import { translateError, tr, type I18nKey } from '../lib/i18n';
 import { useT } from '../lib/useT';
 import { speakText, stopSpeaking } from '../lib/speech';
 import {
+  downloadBase64Pdf,
   downloadBlob,
   downloadGddPdf,
   downloadImage,
   gddToMarkdown,
   gddToText,
+  requestStyledPdf,
   slugifyFilename,
   type GddFormat,
   type ImageFormat,
@@ -219,6 +221,7 @@ export default function GDDForm() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<GddResult | null>(null);
   const [gddFormat, setGddFormat] = useState<GddFormat>('md');
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [imgFormat, setImgFormat] = useState<ImageFormat>('png');
   const [keyOpen, setKeyOpen] = useState(false);
   const hasKey = useSyncExternalStore(subscribeUserApiKey, getUserApiKeySet, () => false);
@@ -399,7 +402,20 @@ export default function GDDForm() {
   };
 
   const downloadGdd = () => {
-    if (!result) return;
+    if (!result || pdfBusy) return;
+    if (gddFormat === 'pdf-pro' || gddFormat === 'pdf-gamebook') {
+      const style = gddFormat === 'pdf-pro' ? 'pro' : 'gamebook';
+      const base = `gdd-${slugifyFilename(result.one_sheet?.title ?? 'document')}`;
+      setPdfBusy(true);
+      requestStyledPdf(result, style, result.images ?? [])
+        .then((res) => {
+          if (res.status !== 'success') setError(res.error ?? tr('err.downloadGdd'));
+          else downloadBase64Pdf(res.pdf_base64, `${base}-${gddFormat}.pdf`);
+        })
+        .catch(() => setError(tr('err.downloadGdd')))
+        .finally(() => setPdfBusy(false));
+      return;
+    }
     try {
       const base = `gdd-${slugifyFilename(result.one_sheet?.title ?? 'document')}`;
       if (gddFormat === 'json') {
@@ -714,6 +730,8 @@ export default function GDDForm() {
                   <option value="json">JSON</option>
                   <option value="txt">{t('common.textFormat')}</option>
                   <option value="pdf">PDF</option>
+                  <option value="pdf-pro">PDF Pro</option>
+                  <option value="pdf-gamebook">PDF Gamebook</option>
                 </select>
                 <button
                   onClick={narrate}
@@ -730,9 +748,10 @@ export default function GDDForm() {
                 </button>
                 <button
                   onClick={downloadGdd}
-                  className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
+                  disabled={pdfBusy}
+                  className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
                 >
-                  {t('common.download')}
+                  {pdfBusy ? '…' : t('common.download')}
                 </button>
               </div>
             )}

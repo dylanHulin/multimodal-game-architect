@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="MultiModal GameArchitect API",
-    description="Agentic Game Generation Engine based on Scott Rogers Framework",
+    description="Agentic Game Generation Engine for game design documents",
     version="0.2.0"
 )
 
@@ -87,7 +87,7 @@ def read_root():
     return {
         "status": "online",
         "project": "MultiModal-GameArchitect",
-        "framework": "Scott Rogers (Level Up!)"
+        "framework": "Game Design Pipeline"
     }
 
 @app.post("/api/v1/generate-code", response_model=CodeGenerationResponse)

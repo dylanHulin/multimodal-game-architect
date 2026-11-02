@@ -27,12 +27,14 @@ import { translateError, tr } from '../lib/i18n';
 import { useT } from '../lib/useT';
 import { speakText, stopSpeaking } from '../lib/speech';
 import {
+  downloadBase64Pdf,
   downloadBlob,
   downloadCodePdf,
   downloadGddPdf,
   downloadImage,
   gddToMarkdown,
   gddToText,
+  requestStyledPdf,
   slugifyFilename,
   type CodeFormat,
   type GddFormat,
@@ -112,6 +114,7 @@ export default function Home() {
   const [artStyle, setArtStyle] = useState('pixel art');
   const [assetList, setAssetList] = useState<AssetData[]>([]);
   const [gddFormat, setGddFormat] = useState<GddFormat>('md');
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [codeFormat, setCodeFormat] = useState<CodeFormat>('source');
   const [imgFormat, setImgFormat] = useState<ImageFormat>('png');
   const [keyOpen, setKeyOpen] = useState(false);
@@ -320,7 +323,20 @@ export default function Home() {
   ];
 
   const downloadGdd = () => {
-    if (!gddData) return;
+    if (!gddData || pdfBusy) return;
+    if (gddFormat === 'pdf-pro' || gddFormat === 'pdf-gamebook') {
+      const style = gddFormat === 'pdf-pro' ? 'pro' : 'gamebook';
+      const base = `gdd-${slugifyFilename(gddData.one_sheet?.title ?? 'document')}`;
+      setPdfBusy(true);
+      requestStyledPdf(gddData, style, assetList)
+        .then((res) => {
+          if (res.status !== 'success') setError(res.error ?? tr('err.downloadGdd'));
+          else downloadBase64Pdf(res.pdf_base64, `${base}-${gddFormat}.pdf`);
+        })
+        .catch(() => setError(tr('err.downloadGdd')))
+        .finally(() => setPdfBusy(false));
+      return;
+    }
     try {
       const base = `gdd-${slugifyFilename(gddData.one_sheet?.title ?? 'document')}`;
       if (gddFormat === 'json') {
@@ -375,7 +391,13 @@ export default function Home() {
             href="/gdd-form"
             className="bg-slate-900 text-slate-200 border border-slate-700 hover:border-blue-500 px-3 py-1 rounded-full text-xs font-semibold transition"
           >
-            {t('header.rogersDoc')}
+            {t('header.builderDoc')}
+          </Link>
+          <Link
+            href="/gdd-review"
+            className="bg-slate-900 text-slate-200 border border-slate-700 hover:border-blue-500 px-3 py-1 rounded-full text-xs font-semibold transition"
+          >
+            {t('nav.review')}
           </Link>
           <LanguageSwitcher />
           <button
@@ -529,6 +551,8 @@ export default function Home() {
                     <option value="json">JSON</option>
                     <option value="txt">{t('common.textFormat')}</option>
                     <option value="pdf">PDF</option>
+                    <option value="pdf-pro">PDF Pro</option>
+                    <option value="pdf-gamebook">PDF Gamebook</option>
                   </select>
                   <button
                     onClick={narrate}
@@ -545,9 +569,10 @@ export default function Home() {
                   </button>
                   <button
                     onClick={downloadGdd}
-                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
+                    disabled={pdfBusy}
+                    className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
                   >
-                    {t('common.download')}
+                    {pdfBusy ? '…' : t('common.download')}
                   </button>
                 </div>
               )}

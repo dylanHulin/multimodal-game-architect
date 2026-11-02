@@ -952,6 +952,259 @@ class PipelineTests(unittest.TestCase):
         old_last = struct.unpack_from("<h", wav, data_offset + (total - 1) * 2)[0]
         self.assertEqual(old_last, -level)
 
+    def _meta_text_client(self, text, seen=None):
+        from unittest.mock import AsyncMock, MagicMock
+
+        seen = seen if seen is not None else {}
+        payload = {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": text}],
+                }
+            ],
+        }
+        resp = MagicMock()
+        resp.json = MagicMock(return_value=payload)
+        resp.raise_for_status = MagicMock()
+
+        async def fake_post(url, headers=None, json=None, **kwargs):
+            seen["url"] = url
+            seen["headers"] = headers
+            seen["json"] = json
+            return resp
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.post = fake_post
+        return client
+
+    def test_review_gdd_success_parses_report(self):
+        import httpx
+        import app.routers.gdd_router as router_module
+        from app.agents.review_agent import ReviewAgent
+        from unittest.mock import MagicMock, patch
+
+        seen = {}
+        client = self._meta_text_client(
+            '{"score": 7, "verdict": "Solid base, thin USPs.", '
+            '"checks": [{"item": "USPs", "status": "weak", "detail": "generic"}], '
+            '"suggestions": [{"id": "x", "section": "USPs", "issue": "vague", '
+            '"proposal": "Add permadeath raids."}]}',
+            seen=seen,
+        )
+        old = router_module.review_agent
+        router_module.review_agent = ReviewAgent(api_key="dummy-test-key")
+        try:
+            with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+                resp = self.client.post(
+                    "/api/v1/review-gdd",
+                    json={"doc_type": "one_sheet", "document": '{"title": "T"}'},
+                )
+        finally:
+            router_module.review_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "success")
+        self.assertEqual(body["score"], 7)
+        self.assertEqual(body["suggestions"][0]["id"], "s1")
+        self.assertEqual(seen["json"]["model"], "muse-wonder-1.0")
+        sent = seen["json"]["input"][0]["content"][0]["text"]
+        self.assertIn("USPs", sent)
+
+    def test_review_gdd_bad_output_is_explicit_error(self):
+        import httpx
+        import app.routers.gdd_router as router_module
+        from app.agents.review_agent import ReviewAgent
+        from unittest.mock import MagicMock, patch
+
+        client = self._meta_text_client("not json at all")
+        old = router_module.review_agent
+        router_module.review_agent = ReviewAgent(api_key="dummy-test-key")
+        try:
+            with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+                resp = self.client.post(
+                    "/api/v1/review-gdd", json={"doc_type": "one_sheet", "document": "x"}
+                )
+        finally:
+            router_module.review_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "error")
+        self.assertIn("Audit impossible", body["error"])
+
+    def test_review_gdd_empty_document_rejected(self):
+        resp = self.client.post(
+            "/api/v1/review-gdd", json={"doc_type": "one_sheet", "document": "  "}
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("auditer", resp.json()["detail"])
+
+    def test_fix_gdd_applies_only_selected(self):
+        import httpx
+        import app.routers.gdd_router as router_module
+        from app.agents.review_agent import ReviewAgent
+        from unittest.mock import MagicMock, patch
+
+        seen = {}
+        client = self._meta_text_client('{"title": "T fixed"}', seen=seen)
+        old = router_module.review_agent
+        router_module.review_agent = ReviewAgent(api_key="dummy-test-key")
+        try:
+            with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+                resp = self.client.post(
+                    "/api/v1/fix-gdd",
+                    json={
+                        "doc_type": "one_sheet",
+                        "document": '{"title": "T"}',
+                        "suggestions": [
+                            {"id": "s1", "section": "USPs", "issue": "vague", "proposal": "PROPOSAL-ONE"},
+                            {"id": "s2", "section": "Modes", "issue": "thin", "proposal": "PROPOSAL-TWO"},
+                        ],
+                        "apply_ids": ["s1"],
+                    },
+                )
+        finally:
+            router_module.review_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "success")
+        self.assertEqual(body["doc_format"], "json")
+        self.assertEqual(body["improved_json"], {"title": "T fixed"})
+        self.assertEqual(body["applied"], ["s1"])
+        sent = seen["json"]["input"][0]["content"][0]["text"]
+        self.assertIn("PROPOSAL-ONE", sent)
+        self.assertNotIn("PROPOSAL-TWO", sent)
+
+    def test_fix_gdd_empty_selection_rejected(self):
+        resp = self.client.post(
+            "/api/v1/fix-gdd",
+            json={"doc_type": "one_sheet", "document": "x", "suggestions": [], "apply_ids": []},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("suggestion", resp.json()["detail"])
+
+    def test_review_gdd_byok_reaches_meta(self):
+        import httpx
+        import app.routers.gdd_router as router_module
+        from app.agents.review_agent import ReviewAgent
+        from unittest.mock import MagicMock, patch
+
+        seen = {}
+        client = self._meta_text_client('{"score": 5}', seen=seen)
+        old = router_module.review_agent
+        router_module.review_agent = ReviewAgent(api_key="dummy-test-key")
+        try:
+            with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+                resp = self.client.post(
+                    "/api/v1/review-gdd",
+                    json={"doc_type": "one_sheet", "document": "x"},
+                    headers={"Authorization": "Bearer user-key-abc"},
+                )
+        finally:
+            router_module.review_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(seen["headers"].get("Authorization"), "Bearer user-key-abc")
+
+    def _mini_gdd(self):
+        return {
+            "document_type": "full_gdd",
+            "one_sheet": {
+                "title": "Neon Harbor",
+                "target_systems": ["PC", "Switch"],
+                "target_age": "12+",
+                "esrb_rating": "E10+",
+                "story_summary": "Run a ramen stall by day, smuggle parts by night.",
+                "gameplay_modes": ["Solo"],
+                "usps": ["Day/night double life", "Ramen crafting", "Harbor factions"],
+                "competitive_products": ["Stardew Valley"],
+            },
+            "beat_chart": [
+                {
+                    "level_name": "Opening",
+                    "progression_focus": "Tutorial",
+                    "mechanics_introduced": ["Cooking"],
+                    "enemies_introduced": [],
+                    "estimated_play_time": "20 min",
+                }
+            ],
+            "ten_pager": {
+                "camera": "Top-down",
+                "character": "Ramen chef",
+                "controls": "Mouse + WASD",
+                "core_loop": "Cook, serve, smuggle, upgrade.",
+                "menu_flow": "Title > Stall > Night market",
+            },
+            "full_gdd": {
+                "lore": "A neon harbor after the flood.",
+                "level_design": "Three docks, one market.",
+                "features": ["Day/night cycle"],
+                "ai_type": "Utility AI",
+                "physics_engine": "Builtin",
+            },
+            "visual_style_prompt": "Cozy cyberpunk pixel art.",
+        }
+
+    def test_gdd_pdf_pro_renders_real_pdf(self):
+        import base64
+
+        resp = self.client.post(
+            "/api/v1/gdd-pdf", json={"gdd": self._mini_gdd(), "style": "pro"}
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "success")
+        raw = base64.b64decode(body["pdf_base64"])
+        self.assertTrue(raw.startswith(b"%PDF"))
+        self.assertGreater(len(raw), 3000)
+
+    def test_gdd_pdf_gamebook_differs(self):
+        import base64
+
+        bodies = {}
+        for style in ("pro", "gamebook"):
+            resp = self.client.post(
+                "/api/v1/gdd-pdf", json={"gdd": self._mini_gdd(), "style": style}
+            )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            bodies[style] = base64.b64decode(resp.json()["pdf_base64"])
+            self.assertTrue(bodies[style].startswith(b"%PDF"))
+        self.assertNotEqual(bodies["pro"], bodies["gamebook"])
+
+    def test_gdd_pdf_cover_data_url(self):
+        import base64
+
+        pixel = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5"
+            "ErkJggg=="
+        )
+        resp = self.client.post(
+            "/api/v1/gdd-pdf",
+            json={
+                "gdd": self._mini_gdd(),
+                "style": "pro",
+                "images": [{"image_url": f"data:image/png;base64,{pixel}"}],
+            },
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "success")
+        self.assertTrue(base64.b64decode(body["pdf_base64"]).startswith(b"%PDF"))
+
+    def test_gdd_pdf_bad_style_rejected(self):
+        resp = self.client.post(
+            "/api/v1/gdd-pdf", json={"gdd": self._mini_gdd(), "style": "comic"}
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("Style PDF", resp.json()["detail"])
+
+    def test_gdd_pdf_empty_rejected(self):
+        resp = self.client.post("/api/v1/gdd-pdf", json={"gdd": {}, "style": "pro"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("PDF", resp.json()["detail"])
+
     def test_music_to_mp3_roundtrip(self):
         import base64
 

@@ -18,6 +18,12 @@ export default function GddFormPage() {
           <div className="flex items-center gap-3">
             <LanguageSwitcher />
             <Link
+              href="/gdd-review"
+              className="bg-slate-900 text-slate-200 border border-slate-700 hover:border-blue-500 px-3 py-1 rounded-full text-xs font-semibold transition"
+            >
+              {t('nav.review')}
+            </Link>
+            <Link
               href="/"
               className="bg-slate-900 text-slate-200 border border-slate-700 hover:border-blue-500 px-3 py-1 rounded-full text-xs font-semibold transition"
             >
