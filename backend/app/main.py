@@ -19,9 +19,15 @@ from typing import Optional
 
 from app.agents.code_agent import CodeGenAgent, CodeGenerationResponse  # type: ignore
 from app.agents.asset_agent import AssetAgent, AssetGenerationResponse  # type: ignore
+from app.agents.music_agent import (  # type: ignore
+    Mp3ConversionResponse,
+    MusicAgent,
+    MusicGenerationResponse,
+    convert_to_mp3,
+)
 from app.agents.sam_agent import CutoutResponse, SamAgent  # type: ignore
 from app.agents.voice_agent import VoiceAgent, VoiceTranscribeResponse  # type: ignore
-from app.auth import user_api_key  # type: ignore
+from app.auth import replicate_api_key, user_api_key  # type: ignore
 from app.routers.gdd_router import router as gdd_router
 
 logger = logging.getLogger(__name__)
@@ -61,11 +67,20 @@ class CutoutRequest(BaseModel):
 class TranscribeRequest(BaseModel):
     audio_base64: str
 
+class MusicGenerationRequest(BaseModel):
+    prompt: str
+    style: Optional[str] = ""
+    duration_sec: Optional[float] = 10.0
+
+class Mp3ConversionRequest(BaseModel):
+    audio_base64: str
+
 # Instances globales des agents (le GDD vit dans app.routers.gdd_router)
 code_agent = CodeGenAgent()
 asset_agent = AssetAgent()
 sam_agent = SamAgent()
 voice_agent = VoiceAgent()
+music_agent = MusicAgent()
 
 @app.get("/")
 def read_root():
@@ -156,3 +171,26 @@ async def transcribe(request: TranscribeRequest, user_key: Optional[str] = Depen
         logger.info("transcribe: using user-provided API key.")
         agent = VoiceAgent(api_key=user_key)
     return await agent.transcribe(wav)
+
+# NOTE: music generation is billed to Replicate: server token by default, or
+# the caller's own key (BYOK via X-Replicate-Key). The Meta BYOK Bearer token
+# is a different service and is never used here.
+@app.post("/api/v1/generate-music", response_model=MusicGenerationResponse)
+async def generate_music(
+    request: MusicGenerationRequest, rep_key: Optional[str] = Depends(replicate_api_key)
+):
+    if not (request.prompt or "").strip():
+        raise HTTPException(status_code=400, detail="Le prompt ne peut pas être vide.")
+    agent = music_agent
+    if rep_key is not None:
+        logger.info("generate-music: using caller-provided Replicate key.")
+        agent = MusicAgent(api_key=rep_key)
+    return await agent.generate_music(
+        prompt=request.prompt,
+        style=request.style or "",
+        duration_sec=request.duration_sec or 10.0,
+    )
+
+@app.post("/api/v1/music-to-mp3", response_model=Mp3ConversionResponse)
+async def music_to_mp3(request: Mp3ConversionRequest):
+    return convert_to_mp3(request.audio_base64)

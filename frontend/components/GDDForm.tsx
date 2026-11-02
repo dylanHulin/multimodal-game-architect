@@ -7,6 +7,7 @@ import CutoutPanel from './CutoutPanel';
 import DictationButton from './DictationButton';
 import GenerationProgress from './GenerationProgress';
 import HistoryPanel from './HistoryPanel';
+import MusicCard from './MusicCard';
 import { apiPost } from '../lib/api';
 import { authHeaders, getUserApiKeySet, subscribeUserApiKey } from '../lib/apiKey';
 import {
@@ -19,6 +20,8 @@ import {
 } from '../lib/cost';
 import type { DemoBundle } from '../lib/demo';
 import { pushHistory, type HistoryEntry } from '../lib/history';
+import { translateError, tr, type I18nKey } from '../lib/i18n';
+import { useT } from '../lib/useT';
 import { speakText, stopSpeaking } from '../lib/speech';
 import {
   downloadBlob,
@@ -103,52 +106,52 @@ const inputCls =
 const labelCls = 'block text-xs text-slate-400 mb-1';
 
 const CAMERAS = [
-  { v: '', l: '— Choisir —' },
-  { v: 'first_person', l: 'Première personne' },
-  { v: 'third_person', l: 'Troisième personne' },
-  { v: 'top_down', l: 'Vue du dessus' },
-  { v: 'side_view', l: 'Vue de côté' },
-  { v: 'isometric', l: 'Isométrique' },
+  { v: '', l: 'common.choose' },
+  { v: 'first_person', l: 'cam.first' },
+  { v: 'third_person', l: 'cam.third' },
+  { v: 'top_down', l: 'cam.top' },
+  { v: 'side_view', l: 'cam.side' },
+  { v: 'isometric', l: 'cam.iso' },
 ];
 
 const AI_TYPES = [
-  { v: '', l: '— Choisir —' },
-  { v: 'finite_state_machine', l: 'Machine à états' },
-  { v: 'behavior_tree', l: 'Arbre de comportement' },
-  { v: 'utility_ai', l: 'IA utilitaire' },
+  { v: '', l: 'common.choose' },
+  { v: 'finite_state_machine', l: 'ai.fsm' },
+  { v: 'behavior_tree', l: 'ai.bt' },
+  { v: 'utility_ai', l: 'ai.util' },
   { v: 'goap', l: 'GOAP' },
 ];
 
 const PHYSICS = [
-  { v: '', l: '— Choisir —' },
-  { v: 'builtin', l: 'Moteur intégré' },
+  { v: '', l: 'common.choose' },
+  { v: 'builtin', l: 'phy.builtin' },
   { v: 'physx', l: 'PhysX' },
   { v: 'box2d', l: 'Box2D' },
   { v: 'rapier', l: 'Rapier' },
-  { v: 'custom', l: 'Maison' },
+  { v: 'custom', l: 'phy.custom' },
 ];
 
 const FEATURES = [
-  { v: 'day_night_cycle', l: 'Cycle jour/nuit' },
-  { v: 'multiplayer', l: 'Multijoueur' },
-  { v: 'procedural_generation', l: 'Génération procédurale' },
-  { v: 'achievements', l: 'Succès' },
-  { v: 'cloud_saves', l: 'Sauvegardes cloud' },
-  { v: 'mod_support', l: 'Support des mods' },
+  { v: 'day_night_cycle', l: 'feat.daynight' },
+  { v: 'multiplayer', l: 'feat.multi' },
+  { v: 'procedural_generation', l: 'feat.proc' },
+  { v: 'achievements', l: 'feat.achieve' },
+  { v: 'cloud_saves', l: 'feat.cloud' },
+  { v: 'mod_support', l: 'feat.mods' },
 ];
 
 const GENRES = [
   { v: 'action', l: 'Action' },
-  { v: 'adventure', l: 'Aventure' },
+  { v: 'adventure', l: 'genre.adventure' },
   { v: 'role-playing-games-rpg', l: 'RPG' },
-  { v: 'strategy', l: 'Stratégie' },
+  { v: 'strategy', l: 'genre.strategy' },
   { v: 'shooter', l: 'Shooter' },
   { v: 'simulation', l: 'Simulation' },
-  { v: 'platformer', l: 'Plateforme' },
+  { v: 'platformer', l: 'genre.platformer' },
   { v: 'puzzle', l: 'Puzzle' },
-  { v: 'racing', l: 'Course' },
-  { v: 'sports', l: 'Sport' },
-  { v: 'indie', l: 'Indé' },
+  { v: 'racing', l: 'genre.racing' },
+  { v: 'sports', l: 'genre.sports' },
+  { v: 'indie', l: 'genre.indie' },
   { v: 'casual', l: 'Casual' },
 ];
 
@@ -160,12 +163,18 @@ const ENGINES = [
 
 const STYLES = [
   { v: 'pixel art', l: 'Pixel art' },
-  { v: 'hand-painted digital art', l: 'Peinture numérique' },
+  { v: 'hand-painted digital art', l: 'style.digital' },
   { v: 'anime style', l: 'Anime / manga' },
-  { v: 'watercolor', l: 'Aquarelle' },
-  { v: 'dark realistic', l: 'Réaliste sombre' },
+  { v: 'watercolor', l: 'style.watercolor' },
+  { v: 'dark realistic', l: 'style.dark' },
   { v: 'cartoon', l: 'Cartoon' },
 ];
+
+/* Option labels hold either an I18nKey (always dotted) or a universal literal
+(engine names, acronyms): tx() renders both without extra dictionaries. */
+function tx(t: (key: I18nKey) => string, s: string): string {
+  return s.includes('.') ? t(s as I18nKey) : s;
+}
 
 function AutoTextarea({
   value,
@@ -197,13 +206,14 @@ function AutoTextarea({
 }
 
 export default function GDDForm() {
+  const { t } = useT();
   const [docType, setDocType] = useState<DocType>('one_sheet');
   const [fields, setFields] = useState<Record<string, string>>({ genre: 'action', engine: 'Godot 4' });
   const [features, setFeatures] = useState<string[]>([]);
   const [visuals, setVisuals] = useState<VisualRow[]>([
     { asset_type: 'concept_art', label: 'Concept Art', enabled: true, count: 2, style: 'pixel art' },
     { asset_type: 'ui_concept', label: 'UI Concept', enabled: false, count: 1, style: 'pixel art' },
-    { asset_type: 'sprite', label: 'Sprite / Modèle', enabled: false, count: 1, style: 'pixel art' },
+    { asset_type: 'sprite', label: 'form.rowSprite', enabled: false, count: 1, style: 'pixel art' },
   ]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -296,14 +306,14 @@ export default function GDDForm() {
       const { images: _images, ...gddOnly } = data;
       void _images;
       await pushHistory('form', {
-        title: data.one_sheet?.title ?? 'Sans titre',
+        title: data.one_sheet?.title ?? tr('err.untitled'),
         docType: data.document_type,
         gdd: gddOnly,
         code: null,
         images: data.images ?? [],
       }).catch(() => undefined);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown generation error');
+      setError(err instanceof Error ? err.message : tr('err.unknown'));
     } finally {
       setLoading(false);
     }
@@ -341,7 +351,9 @@ export default function GDDForm() {
           addSessionSpend(COST_IMAGE_USD);
         },
         (err: unknown) =>
-          setError(`Régénération visuel : ${err instanceof Error ? err.message : 'Unknown error'}`),
+          setError(
+            t('err.regenVisual', { msg: err instanceof Error ? err.message : tr('err.unknown') }),
+          ),
       )
       .finally(() => setRegenImgBusy((p) => ({ ...p, [index]: false })));
   };
@@ -355,10 +367,10 @@ export default function GDDForm() {
     const s = result?.one_sheet;
     const text = [s?.title, s?.story_summary, ...(s?.usps ?? [])].filter(Boolean).join('. ');
     if (!text) return;
-    if (speakText(text, 'fr-FR', () => setSpeaking(false))) {
+    if (speakText(text, undefined, () => setSpeaking(false))) {
       setSpeaking(true);
     } else {
-      setError('Lecture audio indisponible dans ce navigateur.');
+      setError(tr('err.narrate'));
     }
   };
 
@@ -399,14 +411,14 @@ export default function GDDForm() {
         downloadBlob(new Blob([gddToText(result)], { type: 'text/plain' }), `${base}.txt`);
       } else if (gddFormat === 'pdf') {
         void downloadGddPdf(result, `${base}.pdf`).catch(() =>
-          setError('Téléchargement du GDD impossible.'),
+          setError(tr('err.downloadGdd')),
         );
         return;
       } else {
         downloadBlob(new Blob([gddToMarkdown(result)], { type: 'text/markdown' }), `${base}.md`);
       }
     } catch {
-      setError('Téléchargement du GDD impossible.');
+      setError(tr('err.downloadGdd'));
     }
   };
 
@@ -416,27 +428,27 @@ export default function GDDForm() {
 
   return (
     <>
-      <Suspense fallback={<p className="text-xs text-slate-500 mb-8">Chargement des exemples…</p>}>
+      <Suspense fallback={<p className="text-xs text-slate-500 mb-8">{t('common.loadingExamples')}</p>}>
         <ExamplesRow onLoad={loadDemo} />
       </Suspense>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
         {/* Formulaire */}
       <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl h-fit space-y-4">
         <div className="flex justify-between items-center">
-          <h2 className="text-xl font-bold text-slate-200">Document Rogers</h2>
+          <h2 className="text-xl font-bold text-slate-200">{t('formpage.title')}</h2>
           <div className="flex items-center gap-2">
-            {hasKey && <span className="text-xs text-emerald-400">Clé perso active</span>}
+            {hasKey && <span className="text-xs text-emerald-400">{t('common.personalKeyActive')}</span>}
             <button
               onClick={() => setKeyOpen(true)}
               className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 px-2 py-1 rounded-lg text-xs font-semibold transition"
             >
-              Clé API
+              {t('common.apiKey')}
             </button>
           </div>
         </div>
 
         <div>
-          <label className={labelCls}>Type de GDD</label>
+          <label className={labelCls}>{t('form.docType')}</label>
           <select
             className={inputCls}
             value={docType}
@@ -450,21 +462,21 @@ export default function GDDForm() {
 
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className={labelCls}>Genre</label>
+            <label className={labelCls}>{t('form.genre')}</label>
             <select className={inputCls} value={fields.genre ?? 'action'} onChange={set('genre')}>
               {GENRES.map((o) => (
                 <option key={o.v} value={o.v}>
-                  {o.l}
+                  {tx(t, o.l)}
                 </option>
               ))}
             </select>
           </div>
           <div>
-            <label className={labelCls}>Moteur</label>
+            <label className={labelCls}>{t('form.engine')}</label>
             <select className={inputCls} value={fields.engine ?? 'Godot 4'} onChange={set('engine')}>
               {ENGINES.map((o) => (
                 <option key={o.v} value={o.v}>
-                  {o.l}
+                  {tx(t, o.l)}
                 </option>
               ))}
             </select>
@@ -472,16 +484,16 @@ export default function GDDForm() {
         </div>
 
         <div>
-          <label className={labelCls}>Titre</label>
+          <label className={labelCls}>{t('form.titleField')}</label>
           <input className={inputCls} value={fields.title ?? ''} onChange={set('title')} />
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className={labelCls}>Plateforme</label>
+            <label className={labelCls}>{t('form.platform')}</label>
             <input className={inputCls} value={fields.platform ?? ''} onChange={set('platform')} />
           </div>
           <div>
-            <label className={labelCls}>Public cible</label>
+            <label className={labelCls}>{t('form.audience')}</label>
             <input className={inputCls} value={fields.audience ?? ''} onChange={set('audience')} />
           </div>
         </div>
@@ -503,23 +515,23 @@ export default function GDDForm() {
 
         {docType !== 'one_sheet' && (
           <div className="space-y-4 pt-2 border-t border-slate-800">
-            <h3 className="text-sm font-bold text-slate-300 pt-2">Règle des 3C</h3>
+            <h3 className="text-sm font-bold text-slate-300 pt-2">{t('form.rule3c')}</h3>
             <div>
-              <label className={labelCls}>Caméra</label>
+              <label className={labelCls}>{t('form.camera')}</label>
               <select className={inputCls} value={fields.camera ?? ''} onChange={set('camera')}>
                 {CAMERAS.map((o) => (
                   <option key={o.v} value={o.v}>
-                    {o.l}
+                    {tx(t, o.l)}
                   </option>
                 ))}
               </select>
             </div>
             <div>
-              <label className={labelCls}>Personnage</label>
+              <label className={labelCls}>{t('form.character')}</label>
               <input className={inputCls} value={fields.character ?? ''} onChange={set('character')} />
             </div>
             <div>
-              <label className={labelCls}>Contrôles</label>
+              <label className={labelCls}>{t('form.controls')}</label>
               <input className={inputCls} value={fields.controls ?? ''} onChange={set('controls')} />
             </div>
             <div>
@@ -532,7 +544,7 @@ export default function GDDForm() {
               />
             </div>
             <div>
-              <label className={labelCls}>Flow des menus</label>
+              <label className={labelCls}>{t('form.menuFlow')}</label>
               <textarea
                 rows={3}
                 className={inputCls}
@@ -571,24 +583,24 @@ export default function GDDForm() {
                       checked={features.includes(f.v)}
                       onChange={() => toggleFeature(f.v)}
                     />
-                    {f.l}
+                    {tx(t, f.l)}
                   </label>
                 ))}
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className={labelCls}>Type d&apos;IA</label>
+                <label className={labelCls}>{t('form.aiType')}</label>
                 <select className={inputCls} value={fields.ai_type ?? ''} onChange={set('ai_type')}>
                   {AI_TYPES.map((o) => (
                     <option key={o.v} value={o.v}>
-                      {o.l}
+                      {tx(t, o.l)}
                     </option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className={labelCls}>Moteur physique</label>
+                <label className={labelCls}>{t('form.physics')}</label>
                 <select
                   className={inputCls}
                   value={fields.physics_engine ?? ''}
@@ -596,7 +608,7 @@ export default function GDDForm() {
                 >
                   {PHYSICS.map((o) => (
                     <option key={o.v} value={o.v}>
-                      {o.l}
+                      {tx(t, o.l)}
                     </option>
                   ))}
                 </select>
@@ -606,7 +618,7 @@ export default function GDDForm() {
         )}
 
         <div className="space-y-2 pt-2 border-t border-slate-800">
-          <h3 className="text-sm font-bold text-slate-300 pt-2">Génération visuelle</h3>
+          <h3 className="text-sm font-bold text-slate-300 pt-2">{t('form.visualGen')}</h3>
           {visuals.map((r) => (
             <div key={r.asset_type} className="flex flex-wrap items-center gap-3 text-sm text-slate-200">
               <label className="flex items-center gap-2 cursor-pointer min-w-40">
@@ -616,31 +628,31 @@ export default function GDDForm() {
                   checked={r.enabled}
                   onChange={() => toggleVisual(r.asset_type)}
                 />
-                {r.label}
+                {tx(t, r.label)}
               </label>
               {r.enabled && (
                 <>
                   <select
-                    aria-label={`Quantité ${r.label}`}
+                    aria-label={t('form.qtyAria', { label: tx(t, r.label) })}
                     className="bg-slate-950 border border-slate-800 rounded-lg p-1 text-sm text-slate-200"
                     value={r.count}
                     onChange={(e) => setVisualCount(r.asset_type, parseInt(e.target.value, 10))}
                   >
                     {[1, 2, 3, 4, 5].map((n) => (
                       <option key={n} value={n}>
-                        {n} image{n > 1 ? 's' : ''}
+                        {t(n > 1 ? 'form.imgMany' : 'form.imgOne', { n })}
                       </option>
                     ))}
                   </select>
                   <select
-                    aria-label={`Style ${r.label}`}
+                    aria-label={t('form.styleAria', { label: tx(t, r.label) })}
                     className="bg-slate-950 border border-slate-800 rounded-lg p-1 text-sm text-slate-200"
                     value={r.style}
                     onChange={(e) => setVisualStyle(r.asset_type, e.target.value)}
                   >
                     {STYLES.map((s) => (
                       <option key={s.v} value={s.v}>
-                        {s.l}
+                        {tx(t, s.l)}
                       </option>
                     ))}
                   </select>
@@ -648,7 +660,7 @@ export default function GDDForm() {
               )}
             </div>
           ))}
-          <p className="text-xs text-slate-500">Images réelles facturées ~0,01 $/image.</p>
+          <p className="text-xs text-slate-500">{t('form.perImage')}</p>
         </div>
 
         <button
@@ -656,10 +668,10 @@ export default function GDDForm() {
           disabled={loading}
           className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white font-bold py-3 px-4 rounded-lg transition"
         >
-          {loading ? 'Génération en cours...' : 'Générer le GDD'}
+          {loading ? t('common.generating') : t('form.submit')}
         </button>
         <p className="text-xs text-slate-500">
-          Coût estimé :{' '}
+          {t('common.estimatedCost')}{' '}
           <span className="font-mono text-slate-400">
             {formatCost(
               estimateRun(
@@ -669,12 +681,12 @@ export default function GDDForm() {
               ),
             )}
           </span>{' '}
-          · Session <span className="font-mono text-slate-400">{formatCost(spend)}</span>
+          · {t('common.session')} <span className="font-mono text-slate-400">{formatCost(spend)}</span>
         </p>
 
         {error && (
           <p className="text-xs text-red-400 bg-red-950/40 border border-red-500/30 rounded-lg p-3 break-words whitespace-pre-line">
-            {error}
+            {translateError(error)}
           </p>
         )}
       </div>
@@ -684,43 +696,43 @@ export default function GDDForm() {
         {loading && (
           <GenerationProgress
             key={runId}
-            stages={[{ label: 'Document + visuels', state: 'active' }]}
+            stages={[{ label: t('stage.docVisuals'), state: 'active' }]}
           />
         )}
         <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl">
           <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
-            <h2 className="text-lg font-bold text-blue-400">Document généré</h2>
+            <h2 className="text-lg font-bold text-blue-400">{t('form.resultTitle')}</h2>
             {result && (
               <div className="flex items-center gap-2">
                 <select
-                  aria-label="Format du GDD"
+                  aria-label={t('gdd.ariaFormat')}
                   className="bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs text-slate-200"
                   value={gddFormat}
                   onChange={(e) => setGddFormat(e.target.value as GddFormat)}
                 >
                   <option value="md">Markdown</option>
                   <option value="json">JSON</option>
-                  <option value="txt">Texte</option>
+                  <option value="txt">{t('common.textFormat')}</option>
                   <option value="pdf">PDF</option>
                 </select>
                 <button
                   onClick={narrate}
                   className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 text-xs font-semibold py-1 px-3 rounded-lg transition"
                 >
-                  {speaking ? 'Stop' : 'Écouter'}
+                  {speaking ? t('common.stop') : t('common.listen')}
                 </button>
                 <button
                   onClick={() => void handleSubmit()}
                   disabled={loading}
                   className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 disabled:opacity-50 text-xs font-semibold py-1 px-3 rounded-lg transition"
                 >
-                  Régénérer
+                  {t('common.regenerate')}
                 </button>
                 <button
                   onClick={downloadGdd}
                   className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
                 >
-                  Télécharger
+                  {t('common.download')}
                 </button>
               </div>
             )}
@@ -728,13 +740,13 @@ export default function GDDForm() {
           {result ? (
             <div className="space-y-3 text-sm text-slate-300">
               <p className="text-xs text-slate-500">
-                Format : <span className="font-mono text-slate-400">{result.document_type}</span>
+                {t('common.format')} <span className="font-mono text-slate-400">{result.document_type}</span>
               </p>
               <p>
-                <strong className="text-white">Titre :</strong> {result.one_sheet?.title}
+                <strong className="text-white">{t('common.title')}</strong> {result.one_sheet?.title}
               </p>
               <p>
-                <strong className="text-white">Résumé :</strong> {result.one_sheet?.story_summary}
+                <strong className="text-white">{t('common.summary')}</strong> {result.one_sheet?.story_summary}
               </p>
               {result.one_sheet?.usps && result.one_sheet.usps.length > 0 && (
                 <ul className="list-disc list-inside space-y-1 text-slate-400">
@@ -751,26 +763,26 @@ export default function GDDForm() {
               )}
               {result.full_gdd && (result.full_gdd.features?.length ?? 0) > 0 && (
                 <p className="text-xs text-slate-500">
-                  Features : {result.full_gdd.features?.join(', ')}
+                  {t('form.featuresLine', { list: result.full_gdd.features?.join(', ') ?? '' })}
                 </p>
               )}
               {result.status && result.status !== 'success' && (
-                <p className="text-xs text-amber-400 italic">Contenu de secours (voir logs backend).</p>
+                <p className="text-xs text-amber-400 italic">{t('form.fallbackShort')}</p>
               )}
             </div>
           ) : (
             <p className="text-xs text-slate-500 italic">
-              {loading ? 'Génération en cours...' : 'En attente de génération...'}
+              {loading ? t('common.generating') : t('common.waiting')}
             </p>
           )}
         </div>
 
         <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl">
           <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
-            <h2 className="text-lg font-bold text-purple-400">Visuels générés</h2>
+            <h2 className="text-lg font-bold text-purple-400">{t('form.visualsTitle')}</h2>
             {result && result.images && result.images.length > 0 && (
               <select
-                aria-label="Format des images"
+                aria-label={t('assets.ariaFormat')}
                 className="bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs text-slate-200"
                 value={imgFormat}
                 onChange={(e) => setImgFormat(e.target.value as ImageFormat)}
@@ -789,19 +801,21 @@ export default function GDDForm() {
                   <div className="flex justify-between items-center">
                     <p className="text-xs font-mono text-purple-400">{img.asset_type}</p>
                     <div className="flex items-center gap-2">
-                      <CutoutPanel imageUrl={img.image_url} fileBase={`${img.asset_type}-${i + 1}`} />
+                      {img.asset_type === 'sprite' && (
+                        <CutoutPanel imageUrl={img.image_url} fileBase={`${img.asset_type}-${i + 1}`} />
+                      )}
                       <button
                         onClick={() => regenImage(i)}
                         disabled={regenImgBusy[i] || loading}
                         className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 disabled:opacity-50 text-xs font-semibold py-1 px-3 rounded-lg transition"
                       >
-                        {regenImgBusy[i] ? '…' : 'Régénérer'}
+                        {regenImgBusy[i] ? '…' : t('common.regenerate')}
                       </button>
                       <button
                         onClick={() => downloadImg(img, i)}
                         className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
                       >
-                        Télécharger
+                        {t('common.download')}
                       </button>
                     </div>
                   </div>
@@ -815,10 +829,11 @@ export default function GDDForm() {
             </div>
           ) : (
             <p className="text-xs text-slate-500 italic">
-              {loading ? 'Génération en cours...' : 'En attente de génération...'}
+              {loading ? t('common.generating') : t('common.waiting')}
             </p>
           )}
         </div>
+        <MusicCard />
       </div>
       {keyOpen && <APIKeyModal onClose={() => setKeyOpen(false)} />}
       </div>

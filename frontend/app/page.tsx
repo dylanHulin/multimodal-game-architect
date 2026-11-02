@@ -8,6 +8,8 @@ import CutoutPanel from '../components/CutoutPanel';
 import DictationButton from '../components/DictationButton';
 import GenerationProgress, { type ProgressStage } from '../components/GenerationProgress';
 import HistoryPanel from '../components/HistoryPanel';
+import LanguageSwitcher from '../components/LanguageSwitcher';
+import MusicCard from '../components/MusicCard';
 import { authHeaders, getUserApiKeySet, subscribeUserApiKey } from '../lib/apiKey';
 import {
   COST_CODE_USD,
@@ -21,6 +23,8 @@ import {
 } from '../lib/cost';
 import type { DemoBundle } from '../lib/demo';
 import { pushHistory, type HistoryEntry } from '../lib/history';
+import { translateError, tr } from '../lib/i18n';
+import { useT } from '../lib/useT';
 import { speakText, stopSpeaking } from '../lib/speech';
 import {
   downloadBlob,
@@ -91,7 +95,12 @@ async function apiFetch<T>(path: string, body: unknown): Promise<T> {
 }
 
 export default function Home() {
-  const [prompt, setPrompt] = useState('Un jeu de survie contre des hordes de zombies dans un cimetière');
+  const { t } = useT();
+  // Sample prompt follows the UI language until the user types (hydration-safe:
+  // t() is store-driven, unlike useState initializers).
+  const [prompt, setPrompt] = useState('');
+  const [promptTouched, setPromptTouched] = useState(false);
+  const effPrompt = promptTouched ? prompt : t('main.defaultPrompt');
   const [engine, setEngine] = useState('Godot 4');
   const [docType, setDocType] = useState('beat_chart');
   const [loading, setLoading] = useState(false);
@@ -128,14 +137,14 @@ export default function Home() {
 
     const failures: string[] = [];
     const onError = (label: string) => (err: unknown) => {
-      failures.push(`${label} : ${err instanceof Error ? err.message : 'Unknown error'}`);
+      failures.push(`${label} : ${err instanceof Error ? err.message : tr('err.unknown')}`);
     };
     let doneGdd: GddData | null = null;
     let doneCode: CodeData | null = null;
     const doneAssets: AssetData[] = [];
 
     // Code is independent: fire immediately.
-    const codeP = apiFetch<CodeData>('/api/v1/generate-code', { prompt, engine }).then(
+    const codeP = apiFetch<CodeData>('/api/v1/generate-code', { prompt: effPrompt, engine }).then(
       (d) => {
         doneCode = d;
         setCodeData(d);
@@ -146,7 +155,7 @@ export default function Home() {
     // Assets are chained on the GDD: they use its visual_style_prompt so the
     // art direction matches the document (raw prompt if the GDD fails).
     const assetsP = apiFetch<GddData>('/api/v1/generate-gdd', {
-      prompt,
+      prompt: effPrompt,
       doc_type: docType,
       engine,
     })
@@ -154,11 +163,11 @@ export default function Home() {
         (g) => {
           doneGdd = g;
           setGddData(g);
-          return g.visual_style_prompt || prompt;
+          return g.visual_style_prompt || effPrompt;
         },
         (err: unknown) => {
           onError('GDD')(err);
-          return prompt;
+          return effPrompt;
         },
       )
       .then((stylePrompt) =>
@@ -174,7 +183,7 @@ export default function Home() {
                 doneAssets.push(full);
                 setAssetList((prev) => [...prev, full]);
               },
-              onError(`Asset (${t})`),
+              onError(tr('err.asset', { t })),
             ),
           ),
         ),
@@ -187,7 +196,7 @@ export default function Home() {
       if (doneGdd) {
         addSessionSpend(estimateRun(docType, doneAssets.length, doneCode !== null));
         await pushHistory('main', {
-          title: doneGdd.one_sheet?.title ?? 'Sans titre',
+          title: doneGdd.one_sheet?.title ?? tr('err.untitled'),
           docType: doneGdd.document_type,
           gdd: doneGdd,
           code: doneCode,
@@ -201,7 +210,7 @@ export default function Home() {
   const regenGdd = () => {
     setRegenGddBusy(true);
     setError(null);
-    void apiFetch<GddData>('/api/v1/generate-gdd', { prompt, doc_type: docType, engine })
+    void apiFetch<GddData>('/api/v1/generate-gdd', { prompt: effPrompt, doc_type: docType, engine })
       .then(
         (g) => {
           setGddData(g);
@@ -209,7 +218,7 @@ export default function Home() {
         },
         (err: unknown) =>
           setError(
-            `Régénération GDD : ${err instanceof Error ? err.message : 'Unknown error'}`,
+            t('err.regenGdd', { msg: err instanceof Error ? err.message : tr('err.unknown') }),
           ),
       )
       .finally(() => setRegenGddBusy(false));
@@ -218,7 +227,7 @@ export default function Home() {
   const regenCode = () => {
     setRegenCodeBusy(true);
     setError(null);
-    void apiFetch<CodeData>('/api/v1/generate-code', { prompt, engine })
+    void apiFetch<CodeData>('/api/v1/generate-code', { prompt: effPrompt, engine })
       .then(
         (d) => {
           setCodeData(d);
@@ -226,7 +235,7 @@ export default function Home() {
         },
         (err: unknown) =>
           setError(
-            `Régénération script : ${err instanceof Error ? err.message : 'Unknown error'}`,
+            t('err.regenScript', { msg: err instanceof Error ? err.message : tr('err.unknown') }),
           ),
       )
       .finally(() => setRegenCodeBusy(false));
@@ -235,7 +244,7 @@ export default function Home() {
   const regenAsset = (index: number) => {
     const current = assetList[index];
     if (!current) return;
-    const basePrompt = current.basePrompt ?? prompt;
+    const basePrompt = current.basePrompt ?? effPrompt;
     const style = current.style ?? artStyle;
     setRegenAssetBusy((p) => ({ ...p, [index]: true }));
     void apiFetch<AssetData>('/api/v1/generate-asset', {
@@ -252,7 +261,7 @@ export default function Home() {
         },
         (err: unknown) =>
           setError(
-            `Régénération visuel : ${err instanceof Error ? err.message : 'Unknown error'}`,
+            t('err.regenVisual', { msg: err instanceof Error ? err.message : tr('err.unknown') }),
           ),
       )
       .finally(() => setRegenAssetBusy((p) => ({ ...p, [index]: false })));
@@ -267,10 +276,10 @@ export default function Home() {
     const s = gddData?.one_sheet;
     const text = [s?.title, s?.story_summary, ...(s?.usps ?? [])].filter(Boolean).join('. ');
     if (!text) return;
-    if (speakText(text, 'fr-FR', () => setSpeaking(false))) {
+    if (speakText(text, undefined, () => setSpeaking(false))) {
       setSpeaking(true);
     } else {
-      setError('Lecture audio indisponible dans ce navigateur.');
+      setError(tr('err.narrate'));
     }
   };
 
@@ -303,9 +312,9 @@ export default function Home() {
 
   const stages: ProgressStage[] = [
     { label: 'GDD', state: gddData ? 'done' : 'active' },
-    { label: 'Script', state: codeData ? 'done' : 'active' },
+    { label: t('stage.script'), state: codeData ? 'done' : 'active' },
     {
-      label: `Visuels (${assetList.length}/${assetTypes.length})`,
+      label: t('stage.visuals', { done: assetList.length, total: assetTypes.length }),
       state: !loading && assetList.length > 0 ? 'done' : gddData ? 'active' : 'pending',
     },
   ];
@@ -323,13 +332,13 @@ export default function Home() {
         downloadBlob(new Blob([gddToText(gddData)], { type: 'text/plain' }), `${base}.txt`);
       } else if (gddFormat === 'pdf') {
         void downloadGddPdf(gddData, `${base}.pdf`).catch(() =>
-          setError('Téléchargement du GDD impossible.'),
+          setError(tr('err.downloadGdd')),
         );
       } else {
         downloadBlob(new Blob([gddToMarkdown(gddData)], { type: 'text/markdown' }), `${base}.md`);
       }
     } catch {
-      setError('Téléchargement du GDD impossible.');
+      setError(tr('err.downloadGdd'));
     }
   };
 
@@ -339,14 +348,14 @@ export default function Home() {
       const base = codeData.file_name.replace(/\.[^.]+$/, '') || 'script';
       if (codeFormat === 'pdf') {
         void downloadCodePdf(codeData.file_name, codeData.code_content, `${base}.pdf`).catch(() =>
-          setError('Téléchargement du script impossible.'),
+          setError(tr('err.downloadScript')),
         );
         return;
       }
       const name = codeFormat === 'txt' ? `${base}.txt` : codeData.file_name;
       downloadBlob(new Blob([codeData.code_content], { type: 'text/plain' }), name);
     } catch {
-      setError('Téléchargement du script impossible.');
+      setError(tr('err.downloadScript'));
     }
   };
 
@@ -359,26 +368,25 @@ export default function Home() {
       <header className="max-w-6xl mx-auto mb-10 border-b border-slate-800 pb-6 flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-extrabold text-blue-500">🎮 MultiModal-GameArchitect</h1>
-          <p className="text-slate-400 text-sm mt-1">
-            Built for Meta AI Developer Hackathon • Scott Rogers Game Design Framework
-          </p>
+          <p className="text-slate-400 text-sm mt-1">{t('header.tagline')}</p>
         </div>
         <div className="flex items-center gap-3">
           <Link
             href="/gdd-form"
             className="bg-slate-900 text-slate-200 border border-slate-700 hover:border-blue-500 px-3 py-1 rounded-full text-xs font-semibold transition"
           >
-            Document Rogers →
+            {t('header.rogersDoc')}
           </Link>
+          <LanguageSwitcher />
           <button
             onClick={() => setKeyOpen(true)}
             className="bg-slate-900 text-slate-200 border border-slate-700 hover:border-blue-500 px-3 py-1 rounded-full text-xs font-semibold transition"
           >
-            Clé API
+            {t('common.apiKey')}
           </button>
           {hasKey ? (
             <span className="bg-emerald-900/40 text-emerald-400 border border-emerald-500/30 px-3 py-1 rounded-full text-xs font-semibold">
-              Clé perso
+              {t('common.personalKey')}
             </span>
           ) : (
             <span className="bg-blue-900/40 text-blue-400 border border-blue-500/30 px-3 py-1 rounded-full text-xs font-semibold">
@@ -386,35 +394,43 @@ export default function Home() {
             </span>
           )}
           <span
-            title="Estimation des coûts Meta de la session"
+            title={t('header.sessionTitle')}
             className="bg-slate-900 text-slate-400 border border-slate-700 px-3 py-1 rounded-full text-xs font-mono"
           >
-            Session {formatCost(spend)}
+            {t('common.session')} {formatCost(spend)}
           </span>
         </div>
       </header>
 
-      <Suspense fallback={<p className="max-w-6xl mx-auto mb-8 text-xs text-slate-500">Chargement des exemples…</p>}>
+      <Suspense fallback={<p className="max-w-6xl mx-auto mb-8 text-xs text-slate-500">{t('common.loadingExamples')}</p>}>
         <ExamplesRow onLoad={loadDemo} />
       </Suspense>
 
       <section className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-8">
         {/* Formulaire de configuration */}
         <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl h-fit">
-          <h2 className="text-xl font-bold mb-4 text-slate-200">1. Concept du Jeu</h2>
+          <h2 className="text-xl font-bold mb-4 text-slate-200">{t('main.concept')}</h2>
 
           <div className="flex justify-between items-center mb-1">
-            <label className="block text-xs text-slate-400">Prompt de départ</label>
-            <DictationButton onText={(t) => setPrompt((p) => (p ? `${p} ${t}` : t))} />
+            <label className="block text-xs text-slate-400">{t('main.promptLabel')}</label>
+            <DictationButton
+              onText={(txt) => {
+                setPromptTouched(true);
+                setPrompt(effPrompt ? `${effPrompt} ${txt}` : txt);
+              }}
+            />
           </div>
           <textarea
             className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm mb-4 focus:outline-none focus:border-blue-500 text-slate-200"
             rows={4}
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            value={effPrompt}
+            onChange={(e) => {
+              setPromptTouched(true);
+              setPrompt(e.target.value);
+            }}
           />
 
-          <label className="block text-xs text-slate-400 mb-1">Moteur Cible</label>
+          <label className="block text-xs text-slate-400 mb-1">{t('main.engineLabel')}</label>
           <select
             className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm mb-4 text-slate-200"
             value={engine}
@@ -425,23 +441,23 @@ export default function Home() {
             <option value="Unreal Engine">Unreal Engine (C++)</option>
           </select>
 
-          <label className="block text-xs text-slate-400 mb-1">Format de Document (Rogers Framework)</label>
+          <label className="block text-xs text-slate-400 mb-1">{t('main.docLabel')}</label>
           <select
             className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm mb-6 text-slate-200"
             value={docType}
             onChange={(e) => setDocType(e.target.value)}
           >
             <option value="one_sheet">One-Sheet (Pitch & USPs)</option>
-            <option value="beat_chart">Beat Chart (Progression)</option>
+            <option value="beat_chart">{t('main.beatChartOpt')}</option>
             <option value="full_gdd">Full GDD</option>
           </select>
 
-          <label className="block text-xs text-slate-400 mb-1">Assets visuels (~0,01 $ / image)</label>
+          <label className="block text-xs text-slate-400 mb-1">{t('main.assetsLabel')}</label>
           <div className="space-y-1 mb-4 text-sm text-slate-200">
             {[
-              { v: 'sprite', l: 'Sprites' },
-              { v: 'concept_art', l: 'Concept arts' },
-              { v: 'ui_concept', l: 'UI concept' },
+              { v: 'sprite', l: t('main.spritesOpt') },
+              { v: 'concept_art', l: t('main.conceptOpt') },
+              { v: 'ui_concept', l: t('main.uiOpt') },
             ].map((o) => (
               <label key={o.v} className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -459,17 +475,17 @@ export default function Home() {
             ))}
           </div>
 
-          <label className="block text-xs text-slate-400 mb-1">Style graphique</label>
+          <label className="block text-xs text-slate-400 mb-1">{t('main.styleLabel')}</label>
           <select
             className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm mb-6 text-slate-200"
             value={artStyle}
             onChange={(e) => setArtStyle(e.target.value)}
           >
             <option value="pixel art">Pixel art</option>
-            <option value="hand-painted digital art">Peinture numérique</option>
+            <option value="hand-painted digital art">{t('style.digital')}</option>
             <option value="anime style">Anime / manga</option>
-            <option value="watercolor">Aquarelle</option>
-            <option value="dark realistic">Réaliste sombre</option>
+            <option value="watercolor">{t('style.watercolor')}</option>
+            <option value="dark realistic">{t('style.dark')}</option>
             <option value="cartoon">Cartoon</option>
           </select>
 
@@ -478,10 +494,10 @@ export default function Home() {
             disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white font-bold py-3 px-4 rounded-lg transition"
           >
-            {loading ? 'Génération en cours...' : '⚡ Lancer le Pipeline IA'}
+            {loading ? t('common.generating') : t('main.launchBtn')}
           </button>
           <p className="mt-2 text-xs text-slate-500">
-            Coût estimé :{' '}
+            {t('common.estimatedCost')}{' '}
             <span className="font-mono text-slate-400">
               {formatCost(estimateRun(docType, assetTypes.length, true))}
             </span>
@@ -489,7 +505,7 @@ export default function Home() {
 
           {error && (
             <p className="mt-4 text-xs text-red-400 bg-red-950/40 border border-red-500/30 rounded-lg p-3 break-words">
-              {error}
+              {translateError(error)}
             </p>
           )}
         </div>
@@ -504,48 +520,48 @@ export default function Home() {
               {gddData && (
                 <div className="flex items-center gap-2">
                   <select
-                    aria-label="Format du GDD"
+                    aria-label={t('gdd.ariaFormat')}
                     className="bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs text-slate-200"
                     value={gddFormat}
                     onChange={(e) => setGddFormat(e.target.value as GddFormat)}
                   >
                     <option value="md">Markdown</option>
                     <option value="json">JSON</option>
-                    <option value="txt">Texte</option>
+                    <option value="txt">{t('common.textFormat')}</option>
                     <option value="pdf">PDF</option>
                   </select>
                   <button
                     onClick={narrate}
                     className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 text-xs font-semibold py-1 px-3 rounded-lg transition"
                   >
-                    {speaking ? 'Stop' : 'Écouter'}
+                    {speaking ? t('common.stop') : t('common.listen')}
                   </button>
                   <button
                     onClick={regenGdd}
                     disabled={regenGddBusy || loading}
                     className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 disabled:opacity-50 text-xs font-semibold py-1 px-3 rounded-lg transition"
                   >
-                    {regenGddBusy ? '…' : 'Régénérer'}
+                    {regenGddBusy ? '…' : t('common.regenerate')}
                   </button>
                   <button
                     onClick={downloadGdd}
                     className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
                   >
-                    Télécharger
+                    {t('common.download')}
                   </button>
                 </div>
               )}
             </div>
             {gddData ? (
               <div className="space-y-4 text-sm text-slate-300">
-                <p><strong className="text-white">Titre :</strong> {gddData.one_sheet?.title}</p>
-                <p><strong className="text-white">Résumé :</strong> {gddData.one_sheet?.story_summary}</p>
-                <p className="text-xs text-slate-500">Format : <span className="font-mono text-slate-400">{gddData.document_type}</span></p>
+                <p><strong className="text-white">{t('common.title')}</strong> {gddData.one_sheet?.title}</p>
+                <p><strong className="text-white">{t('common.summary')}</strong> {gddData.one_sheet?.story_summary}</p>
+                <p className="text-xs text-slate-500">{t('common.format')} <span className="font-mono text-slate-400">{gddData.document_type}</span></p>
                 {gddData.status && gddData.status !== 'success' && (
-                  <p className="text-xs text-amber-400 italic">Contenu de secours : la réponse Meta était inutilisable (voir les logs backend).</p>
+                  <p className="text-xs text-amber-400 italic">{t('gdd.fallback')}</p>
                 )}
                 <div>
-                  <strong className="text-white block mb-1">USPs (Unique Selling Points) :</strong>
+                  <strong className="text-white block mb-1">{t('gdd.usps')}</strong>
                   <ul className="list-disc list-inside space-y-1 text-slate-400">
                     {gddData.one_sheet?.usps?.map((usp: string, idx: number) => (
                       <li key={idx}>{usp}</li>
@@ -554,14 +570,14 @@ export default function Home() {
                 </div>
                 {gddData.beat_chart && gddData.beat_chart.length > 0 && (
                   <div>
-                    <strong className="text-white block mb-1">Beat Chart (Progression) :</strong>
+                    <strong className="text-white block mb-1">{t('gdd.beatChart')}</strong>
                     <ul className="space-y-2">
                       {gddData.beat_chart.map((lvl: BeatChartLevelData, idx: number) => (
                         <li key={idx} className="bg-slate-950 border border-slate-800 rounded-lg p-3">
                           <p className="text-slate-200 font-semibold">{lvl.level_name} <span className="text-slate-500 font-normal">({lvl.estimated_play_time})</span></p>
                           <p className="text-slate-400 text-xs mt-1">{lvl.progression_focus}</p>
-                          <p className="text-slate-500 text-xs mt-1">Mécaniques : {(lvl.mechanics_introduced ?? []).join(', ')}</p>
-                          <p className="text-slate-500 text-xs">Ennemis : {(lvl.enemies_introduced ?? []).join(', ')}</p>
+                          <p className="text-slate-500 text-xs mt-1">{t('gdd.mechanics')} {(lvl.mechanics_introduced ?? []).join(', ')}</p>
+                          <p className="text-slate-500 text-xs">{t('gdd.enemies')} {(lvl.enemies_introduced ?? []).join(', ')}</p>
                         </li>
                       ))}
                     </ul>
@@ -569,24 +585,24 @@ export default function Home() {
                 )}
               </div>
             ) : (
-              <p className="text-xs text-slate-500 italic">{loading ? 'Génération en cours...' : 'En attente de génération...'}</p>
+              <p className="text-xs text-slate-500 italic">{loading ? t('common.generating') : t('common.waiting')}</p>
             )}
           </div>
 
           {/* Section Code */}
           <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl">
             <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
-              <h2 className="text-lg font-bold text-emerald-400">💻 Script de Contrôleur (Code Agent)</h2>
+              <h2 className="text-lg font-bold text-emerald-400">{t('code.title')}</h2>
               {codeData && (
                 <div className="flex items-center gap-2">
                   <select
-                    aria-label="Format du script"
+                    aria-label={t('code.ariaFormat')}
                     className="bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs text-slate-200"
                     value={codeFormat}
                     onChange={(e) => setCodeFormat(e.target.value as CodeFormat)}
                   >
-                    <option value="source">Fichier source</option>
-                    <option value="txt">Texte (.txt)</option>
+                    <option value="source">{t('common.sourceFile')}</option>
+                    <option value="txt">{t('common.txtFile')}</option>
                     <option value="pdf">PDF</option>
                   </select>
                   <button
@@ -594,13 +610,13 @@ export default function Home() {
                     disabled={regenCodeBusy || loading}
                     className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 disabled:opacity-50 text-xs font-semibold py-1 px-3 rounded-lg transition"
                   >
-                    {regenCodeBusy ? '…' : 'Régénérer'}
+                    {regenCodeBusy ? '…' : t('common.regenerate')}
                   </button>
                   <button
                     onClick={downloadCode}
                     className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
                   >
-                    Télécharger
+                    {t('common.download')}
                   </button>
                 </div>
               )}
@@ -609,24 +625,24 @@ export default function Home() {
               <div>
                 <span className="text-xs font-mono text-emerald-500 mb-2 block">{codeData.file_name} ({codeData.language})</span>
                 {codeData.status && codeData.status !== 'success' && (
-                  <p className="text-xs text-amber-400 italic mb-2">Script de secours : la génération Meta a échoué (voir les logs backend).</p>
+                  <p className="text-xs text-amber-400 italic mb-2">{t('code.fallback')}</p>
                 )}
                 <pre className="bg-slate-950 p-4 rounded-lg text-xs font-mono text-slate-300 overflow-x-auto border border-slate-800">
                   {codeData.code_content}
                 </pre>
               </div>
             ) : (
-              <p className="text-xs text-slate-500 italic">{loading ? 'Génération en cours...' : 'En attente de génération...'}</p>
+              <p className="text-xs text-slate-500 italic">{loading ? t('common.generating') : t('common.waiting')}</p>
             )}
           </div>
 
           {/* Section Assets Visuels */}
           <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl">
             <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
-              <h2 className="text-lg font-bold text-purple-400">🎨 Assets Visuels (Meta Muse Image Agent)</h2>
+              <h2 className="text-lg font-bold text-purple-400">{t('assets.title')}</h2>
               {assetList.length > 0 && (
                 <select
-                  aria-label="Format des images"
+                  aria-label={t('assets.ariaFormat')}
                   className="bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs text-slate-200"
                   value={imgFormat}
                   onChange={(e) => setImgFormat(e.target.value as ImageFormat)}
@@ -645,34 +661,37 @@ export default function Home() {
                     <div className="flex justify-between items-center">
                       <p className="text-xs font-mono text-purple-400">{a.asset_type}</p>
                       <div className="flex items-center gap-2">
-                        <CutoutPanel imageUrl={a.image_url} fileBase={`${a.asset_type}-${idx + 1}`} />
+                        {a.asset_type === 'sprite' && (
+                          <CutoutPanel imageUrl={a.image_url} fileBase={`${a.asset_type}-${idx + 1}`} />
+                        )}
                         <button
                           onClick={() => regenAsset(idx)}
                           disabled={regenAssetBusy[idx] || loading}
                           className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 disabled:opacity-50 text-xs font-semibold py-1 px-3 rounded-lg transition"
                         >
-                          {regenAssetBusy[idx] ? '…' : 'Régénérer'}
+                          {regenAssetBusy[idx] ? '…' : t('common.regenerate')}
                         </button>
                         <button
                           onClick={() => downloadAsset(a, idx)}
                           className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-1 px-3 rounded-lg transition"
                         >
-                          Télécharger
+                          {t('common.download')}
                         </button>
                       </div>
                     </div>
-                    <p className="text-xs text-slate-400"><strong>Prompt :</strong> {a.prompt_used}</p>
+                    <p className="text-xs text-slate-400"><strong>{t('gdd.prompt')}</strong> {a.prompt_used}</p>
                     <img src={a.image_url} alt={`Generated ${a.asset_type}`} className="w-full max-w-sm rounded-lg border border-slate-800 bg-slate-950" />
                     {a.status !== 'success' && (
-                      <p className="text-xs text-amber-400 italic">Aperçu simulé : la génération Meta Muse Image a échoué (voir les logs backend).</p>
+                      <p className="text-xs text-amber-400 italic">{t('assets.fallback')}</p>
                     )}
                   </div>
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-slate-500 italic">{loading ? 'En attente du style visuel (GDD)...' : 'En attente de génération...'}</p>
+              <p className="text-xs text-slate-500 italic">{loading ? t('assets.waitingStyle') : t('common.waiting')}</p>
             )}
           </div>
+          <MusicCard />
         </div>
       </section>
 

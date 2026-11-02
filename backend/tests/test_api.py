@@ -708,5 +708,278 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(seen.get("api_key"), "user-key-xyz-789")
 
 
+    def _make_wav(self, seconds=12, sample_rate=32000, channels=1):
+        import math
+        import struct
+
+        frames = int(seconds * sample_rate)
+        pcm = bytearray()
+        for i in range(frames):
+            sample = int(8000 * math.sin(2 * math.pi * 220 * i / sample_rate))
+            pcm += struct.pack("<h", sample) * channels
+        return (
+            b"RIFF"
+            + struct.pack("<I", 36 + len(pcm))
+            + b"WAVEfmt "
+            + struct.pack(
+                "<IHHIIHH", 16, 1, channels, sample_rate, sample_rate * channels * 2,
+                channels * 2, 16,
+            )
+            + b"data"
+            + struct.pack("<I", len(pcm))
+            + bytes(pcm)
+        )
+
+    def _replicate_client(self, wav_bytes, final_status="succeeded", seen=None):
+        from unittest.mock import AsyncMock, MagicMock
+
+        seen = seen if seen is not None else {}
+        created = MagicMock()
+        created.status_code = 200
+        created.json = MagicMock(return_value={"id": "pred-1", "status": "starting"})
+        created.raise_for_status = MagicMock()
+        polled = MagicMock()
+        polled.status_code = 200
+        polled.json = MagicMock(
+            return_value={
+                "id": "pred-1",
+                "status": final_status,
+                "output": "https://cdn.example/x.wav",
+                "error": "boom" if final_status == "failed" else None,
+            }
+        )
+        polled.raise_for_status = MagicMock()
+        audio = MagicMock()
+        audio.status_code = 200
+        audio.content = wav_bytes
+        audio.raise_for_status = MagicMock()
+
+        async def fake_post(url, headers=None, json=None, **kwargs):
+            seen["post_url"] = url
+            seen["post_headers"] = headers
+            seen["post_json"] = json
+            return created
+
+        async def fake_get(url, headers=None, **kwargs):
+            if "predictions/pred-1" in url:
+                seen["poll_headers"] = headers
+                return polled
+            seen["file_headers"] = headers
+            return audio
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.post = fake_post
+        client.get = fake_get
+        return client
+
+    def test_generate_music_success_trims(self):
+        import httpx
+        import app.main as main_module
+        from app.agents.music_agent import MusicAgent
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        wav12 = self._make_wav(seconds=12)
+        seen = {}
+        client = self._replicate_client(wav12, seen=seen)
+
+        old = main_module.music_agent
+        main_module.music_agent = MusicAgent(api_key="dummy-test-key")
+        try:
+            with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+                resp = self.client.post(
+                    "/api/v1/generate-music",
+                    json={"prompt": "dark dungeon", "style": "orchestral", "duration_sec": 5},
+                )
+        finally:
+            main_module.music_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "success")
+        self.assertEqual(body["sample_rate"], 32000)
+        self.assertEqual(body["channels"], 1)
+        self.assertAlmostEqual(body["duration_sec"], 5.0, places=1)
+        self.assertIn("orchestral", body["prompt_used"])
+        self.assertIn("no fade out", body["prompt_used"])
+        import base64
+
+        trimmed = base64.b64decode(body["audio_base64"])
+        self.assertTrue(trimmed.startswith(b"RIFF"))
+        self.assertEqual(seen["post_headers"].get("Authorization"), "Bearer dummy-test-key")
+        self.assertTrue(seen["post_url"].endswith("/v1/predictions"))
+        self.assertEqual(
+            seen["post_json"]["version"],
+            "671ac645ce5e552cc63a54a2bbff63fcf798043055d2dac5fc9e36a837eedcfb",
+        )
+        self.assertEqual(seen["post_json"]["input"]["duration"], 5)
+        self.assertIsNone(seen["file_headers"])
+
+    def test_generate_music_failed_prediction_is_explicit(self):
+        import httpx
+        import app.main as main_module
+        from app.agents.music_agent import MusicAgent
+        from unittest.mock import MagicMock, patch
+
+        client = self._replicate_client(self._make_wav(seconds=1), final_status="failed")
+
+        old = main_module.music_agent
+        main_module.music_agent = MusicAgent(api_key="dummy-test-key")
+        try:
+            with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+                resp = self.client.post("/api/v1/generate-music", json={"prompt": "x"})
+        finally:
+            main_module.music_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "error")
+        self.assertIn("prédiction", body["error"])
+
+    def test_generate_music_bad_token_is_explicit(self):
+        import httpx
+        import app.main as main_module
+        from app.agents.music_agent import MusicAgent
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        denied = MagicMock()
+        denied.status_code = 401
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.post = AsyncMock(return_value=denied)
+
+        old = main_module.music_agent
+        main_module.music_agent = MusicAgent(api_key="dummy-test-key")
+        try:
+            with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+                resp = self.client.post("/api/v1/generate-music", json={"prompt": "x"})
+        finally:
+            main_module.music_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "error")
+        self.assertIn("Replicate", body["error"])
+
+    def test_generate_music_404_probes_auth(self):
+        import httpx
+        import app.main as main_module
+        from app.agents.music_agent import MusicAgent
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        not_found = MagicMock()
+        not_found.status_code = 404
+        unauth = MagicMock()
+        unauth.status_code = 401
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.post = AsyncMock(return_value=not_found)
+        client.get = AsyncMock(return_value=unauth)
+
+        old = main_module.music_agent
+        main_module.music_agent = MusicAgent(api_key="dummy-test-key")
+        try:
+            with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+                resp = self.client.post("/api/v1/generate-music", json={"prompt": "x"})
+        finally:
+            main_module.music_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "error")
+        self.assertIn("Clé Replicate invalide", body["error"])
+        client.get.assert_awaited_once()
+        probe_url = client.get.await_args.args[0]
+        self.assertIn("/account", probe_url)
+
+    def test_generate_music_uses_caller_replicate_key(self):
+        import httpx
+        import app.main as main_module
+        from app.agents.music_agent import MusicAgent
+        from unittest.mock import MagicMock, patch
+
+        seen = {}
+        client = self._replicate_client(self._make_wav(seconds=1), seen=seen)
+        old = main_module.music_agent
+        main_module.music_agent = MusicAgent(api_key="dummy-test-key")
+        try:
+            with patch.object(httpx, "AsyncClient", MagicMock(return_value=client)):
+                resp = self.client.post(
+                    "/api/v1/generate-music",
+                    json={"prompt": "x"},
+                    headers={"X-Replicate-Key": "r8-user-key-123"},
+                )
+        finally:
+            main_module.music_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()["status"], "success")
+        self.assertEqual(seen["post_headers"].get("Authorization"), "Bearer r8-user-key-123")
+
+    def test_crossfade_loop_blends_tail_with_head(self):
+        import struct
+
+        from app.agents.music_agent import _find_data_chunk, crossfade_loop_wav
+
+        sample_rate, seconds, level = 32000, 5, 12000
+        frames = seconds * sample_rate
+        pcm = bytearray()
+        for i in range(frames):
+            pcm += struct.pack("<h", level if i < frames // 2 else -level)
+        wav = (
+            b"RIFF"
+            + struct.pack("<I", 36 + len(pcm))
+            + b"WAVEfmt "
+            + struct.pack(
+                "<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * 2, 2, 16
+            )
+            + b"data"
+            + struct.pack("<I", len(pcm))
+            + bytes(pcm)
+        )
+        out = crossfade_loop_wav(wav)
+        self.assertEqual(len(out), len(wav))
+        _, _, data_offset, data_len = _find_data_chunk(wav)
+        total = data_len // 2
+        span = min(int(sample_rate * 1.5), total // 4)
+        # Untouched before the crossfade zone.
+        head = (total - span) * 2
+        self.assertEqual(out[data_offset:data_offset + head], wav[data_offset:data_offset + head])
+        # Mid-crossfade is an exact 50/50 blend: (+12000 - 12000) / 2 = 0.
+        mid = struct.unpack_from("<h", out, data_offset + (total - span // 2) * 2)[0]
+        self.assertLessEqual(abs(mid), 1)
+        # Last frame converged to the head material, far from the old tail.
+        last = struct.unpack_from("<h", out, data_offset + (total - 1) * 2)[0]
+        self.assertGreater(last, level - 50)
+        old_last = struct.unpack_from("<h", wav, data_offset + (total - 1) * 2)[0]
+        self.assertEqual(old_last, -level)
+
+    def test_music_to_mp3_roundtrip(self):
+        import base64
+
+        wav = self._make_wav(seconds=1, sample_rate=16000)
+        resp = self.client.post(
+            "/api/v1/music-to-mp3", json={"audio_base64": base64.b64encode(wav).decode("ascii")}
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "success")
+        mp3 = base64.b64decode(body["audio_base64"])
+        self.assertGreater(len(mp3), 100)
+        self.assertEqual(mp3[0], 0xFF)
+        self.assertEqual(mp3[1] & 0xE0, 0xE0)
+
+    def test_music_to_mp3_rejects_bad_audio(self):
+        r1 = self.client.post("/api/v1/music-to-mp3", json={"audio_base64": "!!!"})
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r1.json()["status"], "error")
+        import base64
+
+        r2 = self.client.post(
+            "/api/v1/music-to-mp3",
+            json={"audio_base64": base64.b64encode(b"not a wav" * 8).decode("ascii")},
+        )
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r2.json()["status"], "error")
+
+
 if __name__ == "__main__":
     unittest.main()

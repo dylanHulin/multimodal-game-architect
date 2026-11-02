@@ -8,9 +8,11 @@ import {
   type HistoryEntry,
   type HistoryPage,
 } from '../lib/history';
+import { LOCALES } from '../lib/i18n';
+import { useT } from '../lib/useT';
 
-function fmtDate(ts: number): string {
-  return new Date(ts).toLocaleString('fr-FR', {
+function fmtDate(ts: number, locale: string): string {
+  return new Date(ts).toLocaleString(locale, {
     day: '2-digit',
     month: '2-digit',
     hour: '2-digit',
@@ -31,6 +33,7 @@ export default function HistoryPanel({
   page: HistoryPage;
   onRestore: (entry: HistoryEntry) => void;
 }) {
+  const { lang, t } = useT();
   const [open, setOpen] = useState(false);
   const entries = useSyncExternalStore(
     subscribeHistory,
@@ -44,7 +47,7 @@ export default function HistoryPanel({
         onClick={() => setOpen((o) => !o)}
         className="w-full flex justify-between items-center p-4 text-sm font-bold text-slate-200"
       >
-        <span>Historique local</span>
+        <span>{t('hist.title')}</span>
         <span className="text-xs font-mono text-slate-500">
           {entries.length} · {open ? '−' : '+'}
         </span>
@@ -52,7 +55,7 @@ export default function HistoryPanel({
       {open && (
         <div className="px-4 pb-4 space-y-2">
           {entries.length === 0 && (
-            <p className="text-xs text-slate-500 italic">Aucune génération pour l&apos;instant.</p>
+            <p className="text-xs text-slate-500 italic">{t('hist.empty')}</p>
           )}
           {entries.map((e) => (
             <div
@@ -71,18 +74,18 @@ export default function HistoryPanel({
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-slate-200 truncate">{e.title}</p>
                 <p className="text-xs text-slate-500 font-mono">
-                  {e.docType} · {fmtDate(e.ts)}
+                  {e.docType} · {fmtDate(e.ts, LOCALES[lang])}
                 </p>
               </div>
               <button
                 onClick={() => onRestore(e)}
                 className="bg-slate-900 text-slate-200 border border-slate-700 hover:border-blue-500 px-2 py-1 rounded-lg text-xs font-semibold transition"
               >
-                Recharger
+                {t('hist.reload')}
               </button>
               <button
                 onClick={() => deleteHistoryEntry(page, e.id)}
-                aria-label={`Supprimer ${e.title}`}
+                aria-label={t('hist.delete', { t: e.title })}
                 className="text-slate-600 hover:text-red-400 text-sm px-1 transition"
               >
                 ×
@@ -90,7 +93,7 @@ export default function HistoryPanel({
             </div>
           ))}
           {entries.length > 0 && (
-            <p className="text-xs text-slate-600">Les visuels sont restaurés en miniature.</p>
+            <p className="text-xs text-slate-600">{t('hist.thumbs')}</p>
           )}
         </div>
       )}

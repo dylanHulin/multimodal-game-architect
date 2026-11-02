@@ -10,11 +10,12 @@ import logging
 from typing import Optional
 
 from fastapi import Security  # type: ignore
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer  # type: ignore
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer  # type: ignore
 
 logger = logging.getLogger(__name__)
 
 bearer_scheme = HTTPBearer(auto_error=False)
+replicate_scheme = APIKeyHeader(name="X-Replicate-Key", auto_error=False)
 
 MIN_KEY_LENGTH = 8
 
@@ -28,5 +29,18 @@ def user_api_key(
     token = (credentials.credentials or "").strip()
     if len(token) < MIN_KEY_LENGTH:
         logger.debug("Ignoring too-short Bearer token (%d chars).", len(token))
+        return None
+    return token
+
+
+def replicate_api_key(
+    raw: Optional[str] = Security(replicate_scheme),
+) -> Optional[str]:
+    """Return the caller's own Replicate key, or None when absent/unusable.
+
+    The Meta BYOK Bearer token is a different service and is never used here.
+    """
+    token = (raw or "").strip()
+    if len(token) < MIN_KEY_LENGTH:
         return None
     return token

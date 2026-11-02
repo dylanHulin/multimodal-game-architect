@@ -1,25 +1,35 @@
 'use client';
 
-import { useState } from 'react';
-import { getUserApiKey, setUserApiKey } from '../lib/apiKey';
+import { useState, useSyncExternalStore } from 'react';
+import {
+  getReplicateApiKeySet,
+  getUserApiKeySet,
+  setReplicateApiKey,
+  setUserApiKey,
+  subscribeReplicateApiKey,
+  subscribeUserApiKey,
+} from '../lib/apiKey';
+import { useT } from '../lib/useT';
 
 export default function APIKeyModal({ onClose }: { onClose: () => void }) {
-  const [value, setValue] = useState('');
-  // Read on render: the modal only ever mounts from a click (post-hydration),
-  // and the parent remounts it on every open so state starts fresh.
-  const hasKey = getUserApiKey() !== null;
+  const { t } = useT();
+  const [metaValue, setMetaValue] = useState('');
+  const [repValue, setRepValue] = useState('');
+  const hasMeta = useSyncExternalStore(subscribeUserApiKey, getUserApiKeySet, () => false);
+  const hasRep = useSyncExternalStore(
+    subscribeReplicateApiKey,
+    getReplicateApiKeySet,
+    () => false,
+  );
 
   const save = () => {
-    const v = value.trim();
-    if (!v) return;
-    setUserApiKey(v);
+    if (metaValue.trim()) setUserApiKey(metaValue.trim());
+    if (repValue.trim()) setReplicateApiKey(repValue.trim());
     onClose();
   };
 
-  const clear = () => {
-    setUserApiKey(null);
-    onClose();
-  };
+  const inputClass =
+    'w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500';
 
   return (
     <div
@@ -27,58 +37,80 @@ export default function APIKeyModal({ onClose }: { onClose: () => void }) {
       onClick={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label="Clé API personnelle"
+      aria-label={t('modal.title')}
     >
       <div
         className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-xl p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-lg font-bold text-slate-100">Clé API personnelle</h2>
-        <p className="text-xs text-slate-400 mt-1 mb-4">
-          Utilisée pour les appels Meta à la place de la clé serveur. Stockée uniquement dans
-          ce navigateur, jamais sur le serveur.
-        </p>
-        {hasKey && (
-          <p className="text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 rounded-lg p-2 mb-4">
-            Une clé est déjà configurée — enregistrer une nouvelle clé la remplace.
-          </p>
-        )}
-        <label className="block text-xs text-slate-400 mb-1" htmlFor="byok-key">
-          Clé API Meta
-        </label>
+        <h2 className="text-lg font-bold text-slate-100">{t('modal.title')}</h2>
+        <p className="text-xs text-slate-400 mt-1 mb-4">{t('modal.desc')}</p>
+
+        <div className="flex items-center justify-between mb-1">
+          <label className="block text-xs text-slate-400" htmlFor="byok-meta">
+            {t('modal.metaLabel')}
+          </label>
+          {hasMeta && (
+            <button
+              onClick={() => setUserApiKey(null)}
+              className="text-xs text-red-400 hover:text-red-300"
+            >
+              {t('common.remove')}
+            </button>
+          )}
+        </div>
         <input
-          id="byok-key"
+          id="byok-meta"
           type="password"
           autoComplete="off"
-          placeholder="Collez votre clé ici"
-          className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
+          placeholder={hasMeta ? t('modal.configured') : t('modal.metaPlaceholder')}
+          className={inputClass}
+          value={metaValue}
+          onChange={(e) => setMetaValue(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') save();
           }}
         />
-        <div className="flex justify-end gap-2 mt-5">
-          {hasKey && (
+
+        <div className="flex items-center justify-between mb-1 mt-4">
+          <label className="block text-xs text-slate-400" htmlFor="byok-replicate">
+            {t('modal.repLabel')}
+          </label>
+          {hasRep && (
             <button
-              onClick={clear}
-              className="bg-slate-950 text-red-400 border border-slate-700 hover:border-red-500 px-3 py-1 rounded-lg text-sm font-semibold transition"
+              onClick={() => setReplicateApiKey(null)}
+              className="text-xs text-red-400 hover:text-red-300"
             >
-              Supprimer
+              {t('common.remove')}
             </button>
           )}
+        </div>
+        <input
+          id="byok-replicate"
+          type="password"
+          autoComplete="off"
+          placeholder={hasRep ? t('modal.configured') : t('modal.repPlaceholder')}
+          className={inputClass}
+          value={repValue}
+          onChange={(e) => setRepValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') save();
+          }}
+        />
+
+        <div className="flex justify-end gap-2 mt-5">
           <button
             onClick={onClose}
             className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-slate-500 px-3 py-1 rounded-lg text-sm font-semibold transition"
           >
-            Annuler
+            {t('common.cancel')}
           </button>
           <button
             onClick={save}
-            disabled={!value.trim()}
+            disabled={!metaValue.trim() && !repValue.trim()}
             className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 text-white px-3 py-1 rounded-lg text-sm font-bold transition"
           >
-            Enregistrer
+            {t('common.save')}
           </button>
         </div>
       </div>
