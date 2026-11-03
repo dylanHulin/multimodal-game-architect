@@ -79,6 +79,34 @@ class PipelineTests(unittest.TestCase):
             resp.headers.get("access-control-allow-origin"), "http://localhost:3000"
         )
 
+    def test_cors_allow_origins_reads_env(self):
+        from app.security import cors_allow_origins
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ALLOW_ORIGINS", None)
+            self.assertEqual(
+                cors_allow_origins(),
+                ["http://localhost:3000", "http://127.0.0.1:3000"],
+            )
+        with patch.dict(
+            os.environ,
+            {
+                "ALLOW_ORIGINS": (
+                    "https://demo.vercel.app/, http://localhost:3000 ,"
+                    "notaurl, ftp://x.test, https://api.demo.test:8443/prefix"
+                )
+            },
+        ):
+            self.assertEqual(
+                cors_allow_origins(),
+                [
+                    "http://localhost:3000",
+                    "http://127.0.0.1:3000",
+                    "https://demo.vercel.app",
+                    "https://api.demo.test:8443",
+                ],
+            )
+
     def test_generate_code_and_asset(self):
         r1 = self.client.post(
             "/api/v1/generate-code", json={"prompt": "player", "engine": "Godot 4"}

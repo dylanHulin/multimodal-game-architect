@@ -26,6 +26,36 @@ RATE_LIMIT_ENV = "RATE_LIMIT_PER_MIN"
 RATE_LIMIT_DEFAULT = 120
 RATE_LIMIT_WINDOW_SEC = 60.0
 
+CORS_ENV = "ALLOW_ORIGINS"
+CORS_LOCAL_DEFAULTS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
+def cors_allow_origins() -> list:
+    """Dashboard origins allowed by CORS: localhost defaults + ALLOW_ORIGINS.
+
+    ALLOW_ORIGINS is a comma-separated list of extra origins
+    (e.g. "https://my-app.vercel.app"). Entries are normalized to
+    scheme://host[:port] (paths and trailing slashes dropped); anything
+    that is not an http(s) origin is ignored. Never raises.
+    """
+    origins = list(CORS_LOCAL_DEFAULTS)
+    try:
+        raw = os.getenv(CORS_ENV, "")
+    except Exception:
+        return origins
+    for entry in raw.split(","):
+        try:
+            parts = urllib.parse.urlparse(entry.strip().rstrip("/"))
+            if parts.scheme not in ("http", "https") or not parts.hostname:
+                continue
+            port = f":{parts.port}" if parts.port else ""
+            normalized = f"{parts.scheme}://{parts.hostname}{port}"
+        except Exception:
+            continue
+        if normalized not in origins:
+            origins.append(normalized)
+    return origins
+
 
 def _resolved_ips(host: str) -> list:
     try:
@@ -102,4 +132,4 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-__all__ = ["is_safe_fetch_url", "RateLimitMiddleware"]
+__all__ = ["cors_allow_origins", "is_safe_fetch_url", "RateLimitMiddleware"]

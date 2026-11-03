@@ -1,0 +1,31 @@
+# Render Blueprint: GDD Builder API (FastAPI backend).
+# Apply from the Render dashboard (New > Blueprint), then set the secrets
+# below in the dashboard — never commit real keys. The frontend lives on
+# Vercel; after it is deployed, set ALLOW_ORIGINS to its https URL.
+services:
+  - type: web
+    name: gdd-builder-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.0
+      - key: ALLOW_ORIGINS
+        value: https://gdd-builder.vercel.app
+      - key: META_LLAMA_API_KEY
+        sync: false
+      - key: MUSE_IMAGE_API_KEY
+        sync: false
+      - key: REPLICATE_API_TOKEN
+        sync: false
+      - key: RAWG_API_KEY
+        sync: false
+      - key: TWITCH_CLIENT_ID
+        sync: false
+      - key: TWITCH_CLIENT_SECRET
+        sync: false
+      - key: HUGGINGFACE_API_KEY
+        sync: false

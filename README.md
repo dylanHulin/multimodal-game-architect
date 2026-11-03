@@ -78,8 +78,19 @@ All secrets live in `backend/.env` (git-ignored). Without keys, the app serves b
 | `RAWG_API_KEY` | Similar-game metadata | Grounded references |
 | `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET` | IGDB gameplay references | Grounded references |
 | `HUGGINGFACE_API_KEY` | Reserved | — |
+| `ALLOW_ORIGINS` | Extra CORS origins, comma-separated (localhost always allowed) | Production frontend URL |
 
 Users can also bring their own Meta key in the browser (BYOK); the server key is the fallback.
+
+## Deploy (jury link)
+
+Backend on Render, frontend on Vercel. Order matters:
+
+1. **Backend**: Render dashboard → New → Blueprint → select this repo (`render.yaml` provisions the API). Set the secret env vars in the dashboard, deploy, and note the API URL (`https://gdd-builder-api.onrender.com`).
+2. **Frontend**: Vercel → import repo, root directory `frontend/`, env var `NEXT_PUBLIC_API_URL=<step-1 URL>` (baked in at build time), deploy, and note the site URL.
+3. **CORS**: back on Render, set `ALLOW_ORIGINS=<step-2 URL>` and redeploy the API.
+
+Notes: Render's free tier cold-starts (~1–2 min) after idle — warn evaluators. Railway/Fly.io alternative: build `backend/Dockerfile` instead. Never commit `.env` files; see `backend/.env.example` and `frontend/.env.example`.
 
 ## API
 

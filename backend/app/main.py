@@ -19,7 +19,11 @@ from pydantic import BaseModel  # type: ignore
 from typing import Optional
 
 from app.agents.code_agent import CodeGenAgent, CodeGenerationResponse  # type: ignore
-from app.security import RateLimitMiddleware, is_safe_fetch_url  # type: ignore
+from app.security import (  # type: ignore
+    RateLimitMiddleware,
+    cors_allow_origins,
+    is_safe_fetch_url,
+)
 from app.agents.asset_agent import AssetAgent, AssetGenerationResponse  # type: ignore
 from app.agents.music_agent import (  # type: ignore
     Mp3ConversionResponse,
@@ -42,10 +46,9 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    # Localhost dashboard by default; production origins via ALLOW_ORIGINS
+    # (comma-separated). Evaluated at import, after backend/.env is loaded.
+    allow_origins=cors_allow_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
