@@ -6,7 +6,7 @@ import re
 import httpx
 from enum import Enum
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from app.services.gaming_data_tools import (
     get_igdb_metadata,
