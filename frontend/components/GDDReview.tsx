@@ -16,6 +16,7 @@ import {
   downloadBase64Pdf,
   downloadBlob,
   downloadGddPdf,
+  downloadTextPdf,
   gddToMarkdown,
   gddToText,
   requestStyledPdf,
@@ -209,6 +210,13 @@ export default function GDDReview() {
     } catch {
       setError(t('err.downloadGdd'));
     }
+  };
+
+  const downloadImprovedTextPdf = () => {
+    if (!fix?.improved_text) return;
+    void downloadTextPdf(fix.improved_text, 'gdd-review.pdf').catch(() =>
+      setError(t('err.downloadGdd')),
+    );
   };
 
   const reset = () => {
@@ -509,6 +517,12 @@ export default function GDDReview() {
                     className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 text-xs font-semibold py-1 px-3 rounded-lg transition"
                   >
                     TXT
+                  </button>
+                  <button
+                    onClick={downloadImprovedTextPdf}
+                    className="bg-slate-950 text-slate-300 border border-slate-700 hover:border-blue-500 text-xs font-semibold py-1 px-3 rounded-lg transition"
+                  >
+                    PDF
                   </button>
                 </div>
               )}

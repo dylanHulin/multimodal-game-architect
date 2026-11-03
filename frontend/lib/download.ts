@@ -82,8 +82,14 @@ export function requestStyledPdf(
   style: 'pro' | 'gamebook',
   images: { image_url?: string }[],
 ): Promise<StyledPdfResult> {
+  // Callers pass their whole result object: drop embedded data-URL images
+  // from `gdd` (covers travel via `images`) so the payload stays small.
+  const slimGdd =
+    typeof gdd === 'object' && gdd !== null && !Array.isArray(gdd)
+      ? { ...(gdd as Record<string, unknown>), images: undefined }
+      : gdd;
   return apiPost<StyledPdfResult>('/api/v1/gdd-pdf', {
-    gdd,
+    gdd: slimGdd,
     style,
     images: images
       .filter((i) => i.image_url)
@@ -287,7 +293,7 @@ function addPageNumbers(doc: InstanceType<typeof jsPDF>, pageW: number, pageH: n
   }
 }
 
-export async function downloadGddPdf(g: GddDownloadData, filename: string): Promise<void> {
+async function markdownToPdfBlob(markdown: string): Promise<Blob> {
   const { jsPDF } = await import('jspdf');
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   const pageW = 210;
@@ -317,7 +323,7 @@ export async function downloadGddPdf(g: GddDownloadData, filename: string): Prom
     y += 1.5;
   };
 
-  for (const raw of gddToMarkdown(g).split('\n')) {
+  for (const raw of markdown.split('\n')) {
     const line = raw.trimEnd();
     if (!line.trim()) {
       y += 1.5;
@@ -341,7 +347,15 @@ export async function downloadGddPdf(g: GddDownloadData, filename: string): Prom
   }
 
   addPageNumbers(doc, pageW, pageH, m);
-  downloadBlob(doc.output('blob') as Blob, filename);
+  return doc.output('blob') as Blob;
+}
+
+export async function downloadGddPdf(g: GddDownloadData, filename: string): Promise<void> {
+  downloadBlob(await markdownToPdfBlob(gddToMarkdown(g)), filename);
+}
+
+export async function downloadTextPdf(text: string, filename: string): Promise<void> {
+  downloadBlob(await markdownToPdfBlob(text), filename);
 }
 
 export async function downloadCodePdf(

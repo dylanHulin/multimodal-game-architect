@@ -10,7 +10,7 @@
 - **End-to-end, not a chatbot.** One prompt flows through specialized agents: GDD, code, art, review, music.
 - **Self-correcting.** A dedicated review agent audits every GDD against a checklist and fixes gaps only after your confirmation.
 - **Grounded in real game data.** RAWG, IGDB, and Steam signals feed the generation so references and comparisons are real.
-- **Demo-proof.** Badged fallbacks, explicit JSON errors (never a 500), rate limiting, and a test suite that is green: 54/54 backend tests, clean `tsc` + `eslint`.
+- **Demo-proof.** Badged fallbacks, explicit JSON errors (never a 500), rate limiting, and a test suite that is green: 56/56 backend tests, clean `tsc` + `eslint`.
 
 ## Features
 
@@ -112,7 +112,7 @@ Interactive docs at `http://127.0.0.1:8000/docs`. All endpoints return explicit 
 ## Testing & quality gates
 
 ```bash
-cd backend && ../.venv/Scripts/python -m unittest discover -s tests -t .  # 54/54 green
+cd backend && ../.venv/Scripts/python -m unittest discover -s tests -t .  # 56/56 green
 cd frontend && ./node_modules/.bin/tsc --noEmit && npm run lint -- --quiet  # clean
 ```
 

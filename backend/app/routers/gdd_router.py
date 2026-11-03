@@ -480,10 +480,14 @@ async def gdd_pdf(request: StyledPdfRequest):
         raise HTTPException(status_code=400, detail="Style PDF inconnu (pro ou gamebook).")
     if not request.gdd:
         raise HTTPException(status_code=400, detail="Le document PDF ne peut pas être vide.")
-    if len(json.dumps(request.gdd, default=str)) > 200_000:
+    # Clients may post their whole result object: embedded data-URL images
+    # add zero render work (covers travel via `images`), so they must not
+    # trip the size cap.
+    gdd = {k: v for k, v in request.gdd.items() if k != "images"}
+    if len(json.dumps(gdd, default=str)) > 200_000:
         raise HTTPException(status_code=400, detail="Document trop volumineux (200 Ko max).")
     cover = await _fetch_cover(request.images)
-    pdf, err = await asyncio.to_thread(render_gdd_pdf, request.gdd, request.style, cover)
+    pdf, err = await asyncio.to_thread(render_gdd_pdf, gdd, request.style, cover)
     if err is not None or pdf is None:
         return StyledPdfResponse(status="error", error=err or "Génération PDF impossible.")
     return StyledPdfResponse(

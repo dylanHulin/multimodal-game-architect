@@ -60,6 +60,33 @@ def _t(value: Any) -> str:
     return s.encode("latin-1", "replace").decode("latin-1")
 
 
+_LEVEL_ALIASES = {
+    "level_name": ("level_name", "name", "level", "title"),
+    "progression_focus": ("progression_focus", "focus", "description", "objective"),
+    "mechanics_introduced": ("mechanics_introduced", "mechanics"),
+    "enemies_introduced": ("enemies_introduced", "enemies"),
+    "estimated_play_time": ("estimated_play_time", "playtime", "play_time", "time", "duration"),
+}
+
+
+def _level_field(lvl: Dict[str, Any], keys: tuple) -> Any:
+    for key in keys:
+        value = lvl.get(key)
+        if value:
+            return value
+    return None
+
+
+def _as_str_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(x) for x in value]
+    return [str(value)]
+
+
 def _blocks(gdd: Dict[str, Any]) -> List[tuple]:
     """Shared content model: (kind, payload) blocks. Kinds: h1,h2,p,bullets,kv,table."""
     doc_type = str(gdd.get("document_type") or "")
@@ -95,15 +122,19 @@ def _blocks(gdd: Dict[str, Any]) -> List[tuple]:
         out.append(("h1", "Beat Chart"))
         rows = []
         for lvl in beat:
+            # LLM-regenerated docs (fix agent) don't always keep the exact
+            # level schema: accept renamed keys and bare-string levels.
+            if isinstance(lvl, str):
+                lvl = {"level_name": lvl}
             if not isinstance(lvl, dict):
                 continue
             rows.append(
                 [
-                    str(lvl.get("level_name") or "?"),
-                    str(lvl.get("progression_focus") or ""),
-                    ", ".join(str(x) for x in (lvl.get("mechanics_introduced") or [])),
-                    ", ".join(str(x) for x in (lvl.get("enemies_introduced") or [])),
-                    str(lvl.get("estimated_play_time") or "?"),
+                    str(_level_field(lvl, _LEVEL_ALIASES["level_name"]) or "?"),
+                    str(_level_field(lvl, _LEVEL_ALIASES["progression_focus"]) or ""),
+                    ", ".join(_as_str_list(_level_field(lvl, _LEVEL_ALIASES["mechanics_introduced"]))),
+                    ", ".join(_as_str_list(_level_field(lvl, _LEVEL_ALIASES["enemies_introduced"]))),
+                    str(_level_field(lvl, _LEVEL_ALIASES["estimated_play_time"]) or "?"),
                 ]
             )
         if rows:

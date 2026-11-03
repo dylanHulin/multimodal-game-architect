@@ -1454,6 +1454,52 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(body["one_sheet"]["title"], "Lumen Deep")
         self.assertEqual(len(body["beat_chart"]), 1)
         self.assertEqual(body["beat_chart"][0]["level_name"], "Descent")
+
+    def test_gdd_pdf_ignores_images_embedded_in_gdd(self):
+        # Regression: the GDD form posts its whole result object as `gdd`,
+        # including full data-URL images. Those must not trip the 200 Ko cap
+        # (cover images travel via the separate `images` field).
+        import base64
+
+        gdd = self._mini_gdd()
+        gdd["images"] = [
+            {
+                "asset_type": "concept_art",
+                "prompt_used": "p",
+                "image_url": "data:image/png;base64,"
+                + base64.b64encode(b"x" * 300_000).decode("ascii"),
+                "status": "success",
+            }
+        ]
+        resp = self.client.post(
+            "/api/v1/gdd-pdf", json={"gdd": gdd, "style": "pro", "images": []}
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()["status"], "success")
+
+    def test_pdf_beat_chart_accepts_renamed_level_keys(self):
+        # Regression: fix-agent output renames level keys (or uses bare
+        # strings), which rendered as an empty/??? beat-chart table.
+        from app.services.pdf_layout import _blocks
+
+        gdd = self._mini_gdd()
+        gdd["beat_chart"] = [
+            {
+                "name": "Descent",
+                "focus": "Learn to swim",
+                "mechanics": "Swimming, diving",
+                "enemies": ["Anglerfish"],
+                "playtime": "10 min",
+            },
+            "Interlude",
+        ]
+        tables = [b for b in _blocks(gdd) if b[0] == "table"]
+        self.assertEqual(len(tables), 1)
+        rows = tables[0][2]
+        self.assertEqual(
+            rows[0], ["Descent", "Learn to swim", "Swimming, diving", "Anglerfish", "10 min"]
+        )
+        self.assertEqual(rows[1][0], "Interlude")
         import base64
 
         r2 = self.client.post(
