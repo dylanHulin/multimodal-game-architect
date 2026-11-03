@@ -11,6 +11,7 @@ import GenerationProgress, { type ProgressStage } from '../components/Generation
 import HistoryPanel from '../components/HistoryPanel';
 import LanguageSwitcher from '../components/LanguageSwitcher';
 import MusicCard from '../components/MusicCard';
+import { isNetworkError } from '../lib/api';
 import { authHeaders, getUserApiKeySet, subscribeUserApiKey } from '../lib/apiKey';
 import {
   COST_CODE_USD,
@@ -141,7 +142,11 @@ export default function Home() {
 
     const failures: string[] = [];
     const onError = (label: string) => (err: unknown) => {
-      failures.push(`${label} : ${err instanceof Error ? err.message : tr('err.unknown')}`);
+      failures.push(
+        isNetworkError(err)
+          ? t('err.coldStart')
+          : `${label} : ${err instanceof Error ? err.message : tr('err.unknown')}`,
+      );
     };
     let doneGdd: GddData | null = null;
     let doneCode: CodeData | null = null;
@@ -195,7 +200,7 @@ export default function Home() {
 
     void Promise.all([codeP, assetsP]).then(async () => {
       if (failures.length > 0) {
-        setError(failures.join('\n'));
+        setError([...new Set(failures)].join('\n'));
       }
       if (doneGdd) {
         addSessionSpend(estimateRun(docType, doneAssets.length, doneCode !== null));

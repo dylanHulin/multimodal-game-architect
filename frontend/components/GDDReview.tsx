@@ -3,6 +3,7 @@
 import { useState, useSyncExternalStore } from 'react';
 import APIKeyModal from './APIKeyModal';
 import GenerationProgress from './GenerationProgress';
+import { isNetworkError } from '../lib/api';
 import { getUserApiKeySet, subscribeUserApiKey } from '../lib/apiKey';
 import {
   COST_FIX_USD,
@@ -134,8 +135,8 @@ export default function GDDReview() {
       setReview({ result: res, document });
       setSelected(res.suggestions.map((s) => s.id));
       addSessionSpend(COST_REVIEW_USD);
-    } catch {
-      setError(t('review.net'));
+    } catch (err) {
+      setError(isNetworkError(err) ? t('err.coldStart') : t('review.net'));
     } finally {
       setAuditing(false);
     }
@@ -158,8 +159,8 @@ export default function GDDReview() {
       }
       setFix(res);
       addSessionSpend(COST_FIX_USD);
-    } catch {
-      setError(t('review.net'));
+    } catch (err) {
+      setError(isNetworkError(err) ? t('err.coldStart') : t('review.net'));
     } finally {
       setFixing(false);
     }

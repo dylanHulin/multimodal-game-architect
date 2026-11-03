@@ -9,7 +9,7 @@ import FallbackBadge from './FallbackBadge';
 import GenerationProgress from './GenerationProgress';
 import HistoryPanel from './HistoryPanel';
 import MusicCard from './MusicCard';
-import { apiPost } from '../lib/api';
+import { apiPost, isNetworkError } from '../lib/api';
 import { authHeaders, getUserApiKeySet, subscribeUserApiKey } from '../lib/apiKey';
 import {
   COST_IMAGE_USD,
@@ -317,7 +317,13 @@ export default function GDDForm() {
         images: data.images ?? [],
       }).catch(() => undefined);
     } catch (err) {
-      setError(err instanceof Error ? err.message : tr('err.unknown'));
+      setError(
+        isNetworkError(err)
+          ? tr('err.coldStart')
+          : err instanceof Error
+            ? err.message
+            : tr('err.unknown'),
+      );
     } finally {
       setLoading(false);
     }
