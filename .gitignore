@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Frontend sources: frontend/lib holds Next.js modules, not Python build output.
+!frontend/lib/
