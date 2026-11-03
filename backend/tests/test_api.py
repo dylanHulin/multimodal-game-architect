@@ -1377,6 +1377,83 @@ class PipelineTests(unittest.TestCase):
         r1 = self.client.post("/api/v1/music-to-mp3", json={"audio_base64": "!!!"})
         self.assertEqual(r1.status_code, 200)
         self.assertEqual(r1.json()["status"], "error")
+
+    def test_offline_demo_path_with_visuals_uses_placeholders(self):
+        # Demo-path guard: with no API keys and MOCK_VISUALS off (the real
+        # offline demo), the rich GDDForm payload still returns 200 with a
+        # mock document and placeholder images, each with a distinct prompt.
+        import app.routers.gdd_router as router_module
+
+        old_flag = router_module.MOCK_VISUALS
+        router_module.MOCK_VISUALS = False
+        try:
+            resp = self.client.post(
+                "/api/v1/generate-gdd",
+                json={
+                    "prompt": "haunted lighthouse",
+                    "doc_type": "one_sheet",
+                    "visuals": [
+                        {"asset_type": "concept_art", "enabled": True, "count": 2},
+                        {"asset_type": "sprite", "enabled": True, "count": 2},
+                    ],
+                },
+            )
+        finally:
+            router_module.MOCK_VISUALS = old_flag
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "mock")
+        self.assertEqual(len(body["images"]), 4)
+        self.assertTrue(all(i["status"] == "placeholder" for i in body["images"]))
+        self.assertTrue(all("placehold.co" in i["image_url"] for i in body["images"]))
+        prompts = [i["prompt_used"] for i in body["images"]]
+        self.assertEqual(len(set(prompts)), 4)
+
+    def test_generate_gdd_success_path_with_mocked_meta(self):
+        # Locks the live path: well-formed Meta JSON becomes a success document.
+        import app.routers.gdd_router as router_module
+        from app.agents.gdd_agent import GDDAgent
+        from unittest.mock import AsyncMock
+
+        text = (
+            '{"one_sheet": {"title": "Lumen Deep", "target_systems": ["PC"],'
+            ' "target_age": "12+", "esrb_rating": "E10+", "story_summary": "Dive.",'
+            ' "gameplay_modes": ["Solo"], "usps": ["Light crafting"],'
+            ' "competitive_products": ["Subnautica"]},'
+            ' "beat_chart": [{"level_name": "Descent", "progression_focus": "Learn",'
+            ' "mechanics_introduced": ["Swim"], "enemies_introduced": [],'
+            ' "estimated_play_time": "10 min"}],'
+            ' "visual_style_prompt": "Bioluminescent pixel art."}'
+        )
+        agent = GDDAgent(api_key="dummy-test-key")
+        agent._call_meta_api = AsyncMock(
+            return_value={
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": text}],
+                    }
+                ],
+            }
+        )
+        agent._fetch_market_references = AsyncMock(return_value="")
+        old = router_module.gdd_agent
+        router_module.gdd_agent = agent
+        try:
+            resp = self.client.post(
+                "/api/v1/generate-gdd",
+                json={"prompt": "underwater", "doc_type": "full_gdd"},
+            )
+        finally:
+            router_module.gdd_agent = old
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "success")
+        self.assertEqual(body["document_type"], "full_gdd")
+        self.assertEqual(body["one_sheet"]["title"], "Lumen Deep")
+        self.assertEqual(len(body["beat_chart"]), 1)
+        self.assertEqual(body["beat_chart"][0]["level_name"], "Descent")
         import base64
 
         r2 = self.client.post(

@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import APIKeyModal from './APIKeyModal';
 import CutoutPanel from './CutoutPanel';
 import DictationButton from './DictationButton';
+import FallbackBadge from './FallbackBadge';
 import GenerationProgress from './GenerationProgress';
 import HistoryPanel from './HistoryPanel';
 import MusicCard from './MusicCard';
@@ -785,9 +786,7 @@ export default function GDDForm() {
                   {t('form.featuresLine', { list: result.full_gdd.features?.join(', ') ?? '' })}
                 </p>
               )}
-              {result.status && result.status !== 'success' && (
-                <p className="text-xs text-amber-400 italic">{t('form.fallbackShort')}</p>
-              )}
+              <FallbackBadge status={result.status} message={t('form.fallbackShort')} />
             </div>
           ) : (
             <p className="text-xs text-slate-500 italic">
@@ -843,6 +842,7 @@ export default function GDDForm() {
                     alt={`Generated ${img.asset_type}`}
                     className="w-full rounded-lg border border-slate-800 bg-slate-950"
                   />
+                  <FallbackBadge status={img.status} message={t('assets.fallback')} />
                 </div>
               ))}
             </div>

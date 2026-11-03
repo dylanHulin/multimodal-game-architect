@@ -6,6 +6,7 @@ import { Suspense, useEffect, useState, useSyncExternalStore } from 'react';
 import APIKeyModal from '../components/APIKeyModal';
 import CutoutPanel from '../components/CutoutPanel';
 import DictationButton from '../components/DictationButton';
+import FallbackBadge from '../components/FallbackBadge';
 import GenerationProgress, { type ProgressStage } from '../components/GenerationProgress';
 import HistoryPanel from '../components/HistoryPanel';
 import LanguageSwitcher from '../components/LanguageSwitcher';
@@ -582,9 +583,7 @@ export default function Home() {
                 <p><strong className="text-white">{t('common.title')}</strong> {gddData.one_sheet?.title}</p>
                 <p><strong className="text-white">{t('common.summary')}</strong> {gddData.one_sheet?.story_summary}</p>
                 <p className="text-xs text-slate-500">{t('common.format')} <span className="font-mono text-slate-400">{gddData.document_type}</span></p>
-                {gddData.status && gddData.status !== 'success' && (
-                  <p className="text-xs text-amber-400 italic">{t('gdd.fallback')}</p>
-                )}
+                <FallbackBadge status={gddData.status} message={t('gdd.fallback')} />
                 <div>
                   <strong className="text-white block mb-1">{t('gdd.usps')}</strong>
                   <ul className="list-disc list-inside space-y-1 text-slate-400">
@@ -649,9 +648,7 @@ export default function Home() {
             {codeData ? (
               <div>
                 <span className="text-xs font-mono text-emerald-500 mb-2 block">{codeData.file_name} ({codeData.language})</span>
-                {codeData.status && codeData.status !== 'success' && (
-                  <p className="text-xs text-amber-400 italic mb-2">{t('code.fallback')}</p>
-                )}
+                <FallbackBadge status={codeData.status} message={t('code.fallback')} />
                 <pre className="bg-slate-950 p-4 rounded-lg text-xs font-mono text-slate-300 overflow-x-auto border border-slate-800">
                   {codeData.code_content}
                 </pre>
@@ -706,9 +703,7 @@ export default function Home() {
                     </div>
                     <p className="text-xs text-slate-400"><strong>{t('gdd.prompt')}</strong> {a.prompt_used}</p>
                     <img src={a.image_url} alt={`Generated ${a.asset_type}`} className="w-full max-w-sm rounded-lg border border-slate-800 bg-slate-950" />
-                    {a.status !== 'success' && (
-                      <p className="text-xs text-amber-400 italic">{t('assets.fallback')}</p>
-                    )}
+                    <FallbackBadge status={a.status} message={t('assets.fallback')} />
                   </div>
                 ))}
               </div>
