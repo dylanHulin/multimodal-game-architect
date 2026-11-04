@@ -10,7 +10,7 @@
 - **End-to-end, not a chatbot.** One prompt flows through specialized agents: GDD, code, art, review, music.
 - **Self-correcting.** A dedicated review agent audits every GDD against a checklist and fixes gaps only after your confirmation.
 - **Grounded in real game data.** RAWG, IGDB, and Steam signals feed the generation so references and comparisons are real.
-- **Demo-proof.** Badged fallbacks, explicit JSON errors (never a 500), rate limiting, and a test suite that is green: 56/56 backend tests, clean `tsc` + `eslint`.
+- **Demo-proof.** Badged fallbacks, explicit JSON errors (never a 500), rate limiting, and a test suite that is green: 58/58 backend tests, clean `tsc` + `eslint`.
 
 ## Features
 
@@ -112,11 +112,11 @@ Interactive docs at `http://127.0.0.1:8000/docs`. All endpoints return explicit 
 ## Testing & quality gates
 
 ```bash
-cd backend && ../.venv/Scripts/python -m unittest discover -s tests -t .  # 56/56 green
+cd backend && ../.venv/Scripts/python -m unittest discover -s tests -t .  # 58/58 green
 cd frontend && ./node_modules/.bin/tsc --noEmit && npm run lint -- --quiet  # clean
 ```
 
-Security pass done before release: CORS locked to the dashboard origins, in-memory rate limiting on POST routes, SSRF guards on fetched URLs, input size caps (prompt 4k, review/fix 100 KB, PDF 200 KB), CPU-bound PDF/MP3 work off the event loop.
+Security pass done before release: CORS locked to the dashboard origins, in-memory rate limiting on POST routes (per-minute + per-day caps, `BILLING_PAUSED` kill-switch), SSRF guards on fetched URLs, input size caps (prompt 4k, review/fix 100 KB, PDF 200 KB), CPU-bound PDF/MP3 work off the event loop.
 
 ## Project structure
 

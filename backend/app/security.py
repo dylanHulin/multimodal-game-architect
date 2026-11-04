@@ -5,6 +5,8 @@
   allowed (the frontend serves demo assets on localhost:3000).
 - RateLimitMiddleware: caps billed-endpoint abuse on shared server keys.
   Callers with their own key (BYOK headers) pay their own way and bypass it.
+  Per-minute (RATE_LIMIT_PER_MIN) and per-day (RATE_LIMIT_PER_DAY) sliding
+  windows; BILLING_PAUSED=1 pauses server-key spend instantly (BYOK unaffected).
 """
 
 import ipaddress
@@ -25,6 +27,12 @@ logger = logging.getLogger(__name__)
 RATE_LIMIT_ENV = "RATE_LIMIT_PER_MIN"
 RATE_LIMIT_DEFAULT = 120
 RATE_LIMIT_WINDOW_SEC = 60.0
+
+RATE_LIMIT_DAY_ENV = "RATE_LIMIT_PER_DAY"
+RATE_LIMIT_DAY_DEFAULT = 300
+RATE_LIMIT_DAY_WINDOW_SEC = 86400.0
+
+BILLING_PAUSED_ENV = "BILLING_PAUSED"
 
 CORS_ENV = "ALLOW_ORIGINS"
 CORS_LOCAL_DEFAULTS = ["http://localhost:3000", "http://127.0.0.1:3000"]
@@ -102,12 +110,34 @@ def _limit_per_min() -> int:
         return RATE_LIMIT_DEFAULT
 
 
+def _limit_per_day() -> int:
+    try:
+        return max(1, int(os.getenv(RATE_LIMIT_DAY_ENV, str(RATE_LIMIT_DAY_DEFAULT))))
+    except ValueError:
+        return RATE_LIMIT_DAY_DEFAULT
+
+
+def _billing_paused() -> bool:
+    try:
+        return os.getenv(BILLING_PAUSED_ENV, "").strip().lower() in ("1", "true", "yes")
+    except Exception:
+        return False
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Sliding-window cap on POST /api/v1/* per client IP (in-memory)."""
+    """Sliding-window caps on POST /api/v1/* per client IP (in-memory)."""
 
     def __init__(self, app):
         super().__init__(app)
         self._hits: Dict[str, Deque[float]] = {}
+        self._day_hits: Dict[str, Deque[float]] = {}
+
+    def _prune(self, store: Dict[str, Deque[float]], key: str, now: float, window_sec: float) -> int:
+        window = store.setdefault(key, deque())
+        cutoff = now - window_sec
+        while window and window[0] <= cutoff:
+            window.popleft()
+        return len(window)
 
     async def dispatch(self, request: Request, call_next):
         if (
@@ -116,19 +146,27 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             and "authorization" not in request.headers
             and "x-replicate-key" not in request.headers
         ):
+            if _billing_paused():
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "Générations en pause : réessayez plus tard."},
+                )
             now = time.monotonic()
             key = request.client.host if request.client else "unknown"
-            window = self._hits.setdefault(key, deque())
-            cutoff = now - RATE_LIMIT_WINDOW_SEC
-            while window and window[0] <= cutoff:
-                window.popleft()
-            if len(window) >= _limit_per_min():
+            if self._prune(self._hits, key, now, RATE_LIMIT_WINDOW_SEC) >= _limit_per_min():
                 logger.warning("Rate limit hit for %s.", key)
                 return JSONResponse(
                     status_code=429,
                     content={"detail": "Trop de requêtes : réessayez dans une minute."},
                 )
-            window.append(now)
+            if self._prune(self._day_hits, key, now, RATE_LIMIT_DAY_WINDOW_SEC) >= _limit_per_day():
+                logger.warning("Daily rate limit hit for %s.", key)
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Limite quotidienne atteinte : réessayez demain."},
+                )
+            self._hits[key].append(now)
+            self._day_hits[key].append(now)
         return await call_next(request)
 
 

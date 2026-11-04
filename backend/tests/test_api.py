@@ -1204,6 +1204,58 @@ class PipelineTests(unittest.TestCase):
             else:
                 os.environ[RATE_LIMIT_ENV] = old
 
+    def test_daily_limit_429s_when_exceeded(self):
+        import os
+
+        from app.security import RATE_LIMIT_DAY_ENV, RATE_LIMIT_ENV, RateLimitMiddleware
+
+        async def echo(request):
+            from starlette.responses import JSONResponse  # type: ignore
+
+            return JSONResponse({"ok": True})
+
+        saved = {k: os.environ.get(k) for k in (RATE_LIMIT_ENV, RATE_LIMIT_DAY_ENV)}
+        os.environ[RATE_LIMIT_ENV] = "100"
+        os.environ[RATE_LIMIT_DAY_ENV] = "2"
+        try:
+            mw = RateLimitMiddleware(echo)
+            self.assertEqual(self._rate_dispatch(mw).status_code, 200)
+            self.assertEqual(self._rate_dispatch(mw).status_code, 200)
+            limited = self._rate_dispatch(mw)
+            self.assertEqual(limited.status_code, 429)
+            self.assertIn("quotidienne", limited.body.decode("utf-8"))
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_billing_paused_503s_server_key_but_allows_byok(self):
+        import os
+
+        from app.security import BILLING_PAUSED_ENV, RateLimitMiddleware
+
+        async def echo(request):
+            from starlette.responses import JSONResponse  # type: ignore
+
+            return JSONResponse({"ok": True})
+
+        old = os.environ.get(BILLING_PAUSED_ENV)
+        os.environ[BILLING_PAUSED_ENV] = "1"
+        try:
+            mw = RateLimitMiddleware(echo)
+            paused = self._rate_dispatch(mw)
+            self.assertEqual(paused.status_code, 503)
+            self.assertIn("pause", paused.body.decode("utf-8"))
+            res = self._rate_dispatch(mw, headers={"Authorization": "Bearer [REDACTED]"})
+            self.assertEqual(res.status_code, 200)
+        finally:
+            if old is None:
+                os.environ.pop(BILLING_PAUSED_ENV, None)
+            else:
+                os.environ[BILLING_PAUSED_ENV] = old
+
     def test_is_safe_fetch_url(self):
         from app.security import is_safe_fetch_url
 
